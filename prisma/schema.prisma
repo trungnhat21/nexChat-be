@@ -1,0 +1,284 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model attachments {
+  id         BigInt                 @id @default(autoincrement()) @db.UnsignedBigInt
+  owner_type attachments_owner_type
+  owner_id   BigInt                 @db.UnsignedBigInt
+  file_url   String                 @db.VarChar(1000)
+  file_type  String?                @db.VarChar(100)
+  file_name  String?                @db.VarChar(255)
+  file_size  BigInt?                @db.UnsignedBigInt
+  created_at DateTime               @default(now()) @db.DateTime(0)
+
+  @@index([owner_type, owner_id], map: "idx_attachments_owner")
+}
+
+model comments {
+  id                BigInt     @id @default(autoincrement()) @db.UnsignedBigInt
+  post_id           BigInt     @db.UnsignedBigInt
+  user_id           BigInt     @db.UnsignedBigInt
+  parent_comment_id BigInt?    @db.UnsignedBigInt
+  content           String     @db.Text
+  created_at        DateTime   @default(now()) @db.DateTime(0)
+  updated_at        DateTime   @default(now()) @db.DateTime(0)
+  deleted_at        DateTime?  @db.DateTime(0)
+  comments          comments?  @relation("commentsTocomments", fields: [parent_comment_id], references: [id], onDelete: Cascade, map: "fk_comments_parent")
+  other_comments    comments[] @relation("commentsTocomments")
+  posts             posts      @relation(fields: [post_id], references: [id], onDelete: Cascade, map: "fk_comments_post")
+  users             users      @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_comments_user")
+
+  @@index([parent_comment_id], map: "fk_comments_parent")
+  @@index([post_id], map: "idx_comments_post")
+  @@index([user_id], map: "idx_comments_user")
+}
+
+model conversation_members {
+  id              BigInt                    @id @default(autoincrement()) @db.UnsignedBigInt
+  conversation_id BigInt                    @db.UnsignedBigInt
+  user_id         BigInt                    @db.UnsignedBigInt
+  role            conversation_members_role @default(member)
+  joined_at       DateTime                  @default(now()) @db.DateTime(0)
+  left_at         DateTime?                 @db.DateTime(0)
+  conversations   conversations             @relation(fields: [conversation_id], references: [id], onDelete: Cascade, map: "fk_conversation_members_conversation")
+  users           users                     @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_conversation_members_user")
+
+  @@unique([conversation_id, user_id], map: "uq_conversation_member")
+  @@index([user_id], map: "idx_conversation_members_user")
+}
+
+model conversations {
+  id                   BigInt                 @id @default(autoincrement()) @db.UnsignedBigInt
+  type                 conversations_type     @default(direct)
+  name                 String?                @db.VarChar(255)
+  avatar_url           String?                @db.VarChar(500)
+  created_by           BigInt?                @db.UnsignedBigInt
+  created_at           DateTime               @default(now()) @db.DateTime(0)
+  updated_at           DateTime               @default(now()) @db.DateTime(0)
+  conversation_members conversation_members[]
+  users                users?                 @relation(fields: [created_by], references: [id], map: "fk_conversations_creator")
+  messages             messages[]
+
+  @@index([created_by], map: "fk_conversations_creator")
+}
+
+model friendships {
+  id                                    BigInt             @id @default(autoincrement()) @db.UnsignedBigInt
+  requester_id                          BigInt             @db.UnsignedBigInt
+  addressee_id                          BigInt             @db.UnsignedBigInt
+  status                                friendships_status @default(pending)
+  created_at                            DateTime           @default(now()) @db.DateTime(0)
+  updated_at                            DateTime           @default(now()) @db.DateTime(0)
+  users_friendships_addressee_idTousers users              @relation("friendships_addressee_idTousers", fields: [addressee_id], references: [id], onDelete: Cascade, map: "fk_friendships_addressee")
+  users_friendships_requester_idTousers users              @relation("friendships_requester_idTousers", fields: [requester_id], references: [id], onDelete: Cascade, map: "fk_friendships_requester")
+
+  @@unique([requester_id, addressee_id], map: "uq_friendship")
+  @@index([addressee_id], map: "idx_friendships_addressee")
+  @@index([requester_id], map: "idx_friendships_requester")
+}
+
+model message_reads {
+  id         BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  message_id BigInt   @db.UnsignedBigInt
+  user_id    BigInt   @db.UnsignedBigInt
+  read_at    DateTime @default(now()) @db.DateTime(0)
+  messages   messages @relation(fields: [message_id], references: [id], onDelete: Cascade, map: "fk_message_reads_message")
+  users      users    @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_message_reads_user")
+
+  @@unique([message_id, user_id], map: "uq_message_read")
+  @@index([user_id], map: "fk_message_reads_user")
+}
+
+model messages {
+  id                  BigInt                @id @default(autoincrement()) @db.UnsignedBigInt
+  conversation_id     BigInt                @db.UnsignedBigInt
+  sender_id           BigInt?               @db.UnsignedBigInt
+  content             String?               @db.Text
+  message_type        messages_message_type @default(text)
+  reply_to_message_id BigInt?               @db.UnsignedBigInt
+  created_at          DateTime              @default(now()) @db.DateTime(0)
+  updated_at          DateTime              @default(now()) @db.DateTime(0)
+  deleted_at          DateTime?             @db.DateTime(0)
+  message_reads       message_reads[]
+  conversations       conversations         @relation(fields: [conversation_id], references: [id], onDelete: Cascade, map: "fk_messages_conversation")
+  messages            messages?             @relation("messagesTomessages", fields: [reply_to_message_id], references: [id], map: "fk_messages_reply")
+  other_messages      messages[]            @relation("messagesTomessages")
+  users               users?                @relation(fields: [sender_id], references: [id], map: "fk_messages_sender")
+
+  @@index([reply_to_message_id], map: "fk_messages_reply")
+  @@index([conversation_id], map: "idx_messages_conversation")
+  @@index([created_at], map: "idx_messages_created_at")
+  @@index([sender_id], map: "idx_messages_sender")
+}
+
+model notifications {
+  id                                  BigInt             @id @default(autoincrement()) @db.UnsignedBigInt
+  user_id                             BigInt             @db.UnsignedBigInt
+  actor_id                            BigInt?            @db.UnsignedBigInt
+  type                                notifications_type
+  reference_id                        BigInt?            @db.UnsignedBigInt
+  is_read                             Boolean            @default(false)
+  created_at                          DateTime           @default(now()) @db.DateTime(0)
+  users_notifications_actor_idTousers users?             @relation("notifications_actor_idTousers", fields: [actor_id], references: [id], map: "fk_notifications_actor")
+  users_notifications_user_idTousers  users              @relation("notifications_user_idTousers", fields: [user_id], references: [id], onDelete: Cascade, map: "fk_notifications_user")
+
+  @@index([actor_id], map: "fk_notifications_actor")
+  @@index([is_read], map: "idx_notifications_is_read")
+  @@index([user_id], map: "idx_notifications_user")
+}
+
+model posts {
+  id         BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
+  user_id    BigInt        @db.UnsignedBigInt
+  content    String?       @db.Text
+  privacy    posts_privacy @default(public)
+  created_at DateTime      @default(now()) @db.DateTime(0)
+  updated_at DateTime      @default(now()) @db.DateTime(0)
+  deleted_at DateTime?     @db.DateTime(0)
+  comments   comments[]
+  users      users         @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_posts_user")
+
+  @@index([created_at], map: "idx_posts_created_at")
+  @@index([user_id], map: "idx_posts_user")
+}
+
+model profiles {
+  id           BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  user_id      BigInt    @unique(map: "user_id") @db.UnsignedBigInt
+  display_name String    @db.VarChar(100)
+  avatar_url   String?   @db.VarChar(500)
+  bio          String?   @db.Text
+  birthday     DateTime? @db.Date
+  created_at   DateTime  @default(now()) @db.DateTime(0)
+  updated_at   DateTime  @default(now()) @db.DateTime(0)
+  users        users     @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_profiles_user")
+}
+
+model reactions {
+  id            BigInt                  @id @default(autoincrement()) @db.UnsignedBigInt
+  user_id       BigInt                  @db.UnsignedBigInt
+  target_type   reactions_target_type
+  target_id     BigInt                  @db.UnsignedBigInt
+  reaction_type reactions_reaction_type @default(like)
+  created_at    DateTime                @default(now()) @db.DateTime(0)
+  users         users                   @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_reactions_user")
+
+  @@unique([user_id, target_type, target_id], map: "uq_reaction")
+  @@index([target_type, target_id], map: "idx_reactions_target")
+}
+
+model two_factor_recovery_codes {
+  id         BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  user_id    BigInt    @db.UnsignedBigInt
+  code_hash  String    @db.VarChar(255)
+  used_at    DateTime? @db.DateTime(0)
+  created_at DateTime  @default(now()) @db.DateTime(0)
+  users      users     @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_recovery_codes_user")
+
+  @@index([user_id], map: "fk_recovery_codes_user")
+}
+
+model user_two_factor_auth {
+  id         BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  user_id    BigInt    @unique(map: "user_id") @db.UnsignedBigInt
+  secret     String    @db.VarChar(255)
+  is_enabled Boolean   @default(false)
+  enabled_at DateTime? @db.DateTime(0)
+  created_at DateTime  @default(now()) @db.DateTime(0)
+  updated_at DateTime  @default(now()) @db.DateTime(0)
+  users      users     @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_two_factor_user")
+}
+
+model users {
+  id                                          BigInt                      @id @default(autoincrement()) @db.UnsignedBigInt
+  email                                       String                      @unique(map: "email") @db.VarChar(255)
+  password_hash                               String                      @db.VarChar(255)
+  status                                      users_status                @default(active)
+  created_at                                  DateTime                    @default(now()) @db.DateTime(0)
+  updated_at                                  DateTime                    @default(now()) @db.DateTime(0)
+  comments                                    comments[]
+  conversation_members                        conversation_members[]
+  conversations                               conversations[]
+  friendships_friendships_addressee_idTousers friendships[]               @relation("friendships_addressee_idTousers")
+  friendships_friendships_requester_idTousers friendships[]               @relation("friendships_requester_idTousers")
+  message_reads                               message_reads[]
+  messages                                    messages[]
+  notifications_notifications_actor_idTousers notifications[]             @relation("notifications_actor_idTousers")
+  notifications_notifications_user_idTousers  notifications[]             @relation("notifications_user_idTousers")
+  posts                                       posts[]
+  profiles                                    profiles?
+  reactions                                   reactions[]
+  two_factor_recovery_codes                   two_factor_recovery_codes[]
+  user_two_factor_auth                        user_two_factor_auth?
+}
+
+enum conversations_type {
+  direct
+  group
+}
+
+enum attachments_owner_type {
+  message
+  post
+  comment
+}
+
+enum reactions_target_type {
+  post
+  comment
+  message
+}
+
+enum posts_privacy {
+  public
+  friends
+  private
+}
+
+enum notifications_type {
+  friend_request
+  friend_accept
+  message
+  post_reaction
+  comment
+  comment_reaction
+}
+
+enum conversation_members_role {
+  member
+  admin
+}
+
+enum users_status {
+  active
+  inactive
+  blocked
+}
+
+enum friendships_status {
+  pending
+  accepted
+  rejected
+  blocked
+}
+
+enum reactions_reaction_type {
+  like
+  love
+  haha
+  wow
+  sad
+  angry
+}
+
+enum messages_message_type {
+  text
+  image
+  file
+  system
+}
