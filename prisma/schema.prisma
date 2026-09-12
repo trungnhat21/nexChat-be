@@ -82,6 +82,20 @@ model friendships {
   @@index([requester_id], map: "idx_friendships_requester")
 }
 
+model refresh_tokens {
+  id         BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  user_id    BigInt    @db.UnsignedBigInt
+  token_hash String    @db.VarChar(255)
+  expires_at DateTime  @db.DateTime(0)
+  revoked_at DateTime? @db.DateTime(0)
+  created_at DateTime  @default(now()) @db.DateTime(0)
+
+  user users @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([token_hash])
+}
+
 model message_reads {
   id         BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
   message_id BigInt   @db.UnsignedBigInt
@@ -190,15 +204,22 @@ model user_two_factor_auth {
   is_enabled Boolean   @default(false)
   enabled_at DateTime? @db.DateTime(0)
   created_at DateTime  @default(now()) @db.DateTime(0)
-  updated_at DateTime  @default(now()) @db.DateTime(0)
-  users      users     @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_two_factor_user")
+  updated_at DateTime  @updatedAt @db.DateTime(0)
+
+  users users @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_two_factor_user")
 }
 
 model users {
   id                                          BigInt                      @id @default(autoincrement()) @db.UnsignedBigInt
   email                                       String                      @unique(map: "email") @db.VarChar(255)
+  user_name                                   String?                     @db.VarChar(100)
+  first_name                                  String?                     @db.VarChar(100)
+  last_name                                   String?                     @db.VarChar(100)
+  avatar                                      String?                     @db.VarChar(500)
   password_hash                               String                      @db.VarChar(255)
   status                                      users_status                @default(active)
+  deleted                                     users_deleted               @default(NO)
+  deleted_at                                  DateTime?                   @db.DateTime(0)
   created_at                                  DateTime                    @default(now()) @db.DateTime(0)
   updated_at                                  DateTime                    @default(now()) @db.DateTime(0)
   comments                                    comments[]
@@ -215,6 +236,7 @@ model users {
   reactions                                   reactions[]
   two_factor_recovery_codes                   two_factor_recovery_codes[]
   user_two_factor_auth                        user_two_factor_auth?
+  refresh_tokens                              refresh_tokens[]
 }
 
 enum conversations_type {
@@ -281,4 +303,9 @@ enum messages_message_type {
   image
   file
   system
+}
+
+enum users_deleted {
+  YES
+  NO
 }
