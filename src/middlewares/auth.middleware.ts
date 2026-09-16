@@ -3,7 +3,7 @@ import type {
     Response,
     NextFunction
 } from "express";
-import { verifyAccessToken } from "../utils/token";
+import { verifyAccessToken } from "../utils/token.js";
 
 export interface AuthRequest extends Request {
     userId?: bigint;

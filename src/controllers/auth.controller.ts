@@ -1,21 +1,21 @@
-import prisma from "../configs/prisma";
+import prisma from "../configs/prisma.js";
 import type { Request, Response } from "express";
 import bcrypt from "bcrypt";
-import * as userService from "../services/user.service";
-import * as authService from "../services/auth.service";
+import * as userService from "../services/user.service.js";
+import * as authService from "../services/auth.service.js";
 import {
     createAccessToken,
     createRefreshToken,
     createTwoFactorToken,
     verifyRefreshToken,
     verifyTwoFactorToken,
-} from "../utils/token";
+} from "../utils/token.js";
 import {
     generateSecret,
     verify,
     generateURI
 } from "otplib";
-import type { AuthRequest } from "../middlewares/auth.middleware";
+import type { AuthRequest } from "../middlewares/auth.middleware.js";
 
 export const register = async (req: Request, res: Response) => {
     try {
@@ -50,6 +50,7 @@ export const register = async (req: Request, res: Response) => {
             },
         });
     } catch (error) {
+        console.error("Register error:", error);
         return res.status(500).json({
             success: false,
             message: "Internal server error",
@@ -306,10 +307,9 @@ export const enable2FA = async (req: AuthRequest, res: Response) => {
 
 export const verify2FA = async (req: Request, res: Response) => {
     try {
-        const {
-            challengeToken,
-            code,
-        } = req.body;
+
+        console.log("BODY:", req.body);
+        const { challengeToken, code,} = req.body;
 
         const payload = verifyTwoFactorToken(challengeToken) as {
             userId: string;

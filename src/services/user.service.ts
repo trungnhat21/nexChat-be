@@ -1,4 +1,4 @@
-import prisma from "../configs/prisma";
+import prisma from "../configs/prisma.js";
 import {users_status} from "@prisma/client";   
 
 export const getAllUser = async () => {
