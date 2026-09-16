@@ -61,7 +61,7 @@ export const sendFriendRequest = async (requesterId: bigint, addresseeId: bigint
     if (!addressee) {
         throw new Error("USER_NOT_FOUND");
     }
-    const existingSFriendship = await prisma.friendships.findFirst({
+    const existingFriendship = await prisma.friendships.findFirst({
         where: {
             OR: [
                 {
@@ -75,9 +75,9 @@ export const sendFriendRequest = async (requesterId: bigint, addresseeId: bigint
             ],
         },
     });
-    
-    if (existingSFriendship) {
-        switch (existingSFriendship.status) {
+
+    if (existingFriendship) {
+        switch (existingFriendship.status) {
             case "pending":
                 throw new Error("REQUEST_ALREADY_EXISTS");
             case "accepted":
@@ -85,27 +85,60 @@ export const sendFriendRequest = async (requesterId: bigint, addresseeId: bigint
             case "blocked":
                 throw new Error("USER_BLOCKED");
             case "rejected":
-                return prisma.friendships.update({
-                    where: {
-                        id: existingSFriendship.id,
-                    },
-                    data: {
-                        requester_id: requesterId,
-                        addressee_id: addresseeId,
-                        status: "pending",
-                        updated_at: new Date(),
-                    },
-                });
+                return prisma.$transaction(
+                    async (tx) => {
+
+                        const friendship = await tx.friendships.update({
+                            where: {
+                                id: existingFriendship.id,
+                            },
+
+                            data: {
+                                requester_id: requesterId,
+                                addressee_id: addresseeId,
+                                status: "pending",
+                                updated_at: new Date(),
+                            },
+                        });
+
+                        await tx.notifications.create({
+                            data: {
+                                user_id: addresseeId,
+                                actor_id: requesterId,
+                                type: "friend_request",
+                                reference_id: friendship.id,
+                            },
+                        });
+
+                        return friendship;
+                    }
+                );
         }
     }
 
-    return prisma.friendships.create({
-        data:{
-            requester_id: requesterId,
-            addressee_id: addresseeId,
-            status: "pending",
-        },
-    });
+    return prisma.$transaction(
+        async (tx) => {
+
+            const friendship = await tx.friendships.create({
+                data: {
+                    requester_id: requesterId,
+                    addressee_id: addresseeId,
+                    status: "pending",
+                },
+            });
+
+            await tx.notifications.create({
+                data: {
+                    user_id: addresseeId,
+                    actor_id: requesterId,
+                    type: "friend_request",
+                    reference_id: friendship.id,
+                },
+            });
+
+            return friendship;
+        }
+    );
 };
 
 export const getReceivedRequests = async (userId: bigint) => {
@@ -161,27 +194,45 @@ export const getSentRequests = async (userId: bigint) => {
 };
 
 //Accept friend request
-export const acceptFriendRequest = async (friendshipId: bigint, currentUserId: bigint) => {
+export const acceptFriendRequest = async (requestId: bigint, currentUserId: bigint) => {
     const request = await prisma.friendships.findFirst({
         where: {
-            id: friendshipId,
+            id: requestId,
             addressee_id: currentUserId,
             status: "pending",
         },
     });
 
     if (!request) {
-        throw new Error("Request not found");
+        throw new Error("REQUEST_NOT_FOUND");
     }
-    return prisma.friendships.update({
-        where: {
-            id: request.id,
-        },
-        data: {
-            status: "accepted",
-            updated_at: new Date(),
-        },
-    });
+
+    return prisma.$transaction(
+        async (tx) => {
+
+            const friendship = await tx.friendships.update({
+                    where: {
+                        id: request.id,
+                    },
+
+                    data: {
+                        status: "accepted",
+                        updated_at: new Date(),
+                    },
+                });
+
+            await tx.notifications.create({
+                data: {
+                    user_id: request.requester_id,
+                    actor_id: currentUserId,
+                    type: "friend_accept",
+                    reference_id: friendship.id,
+                },
+            });
+
+            return friendship;
+        }
+    );
 };
 
 //Reject request
@@ -196,7 +247,7 @@ export const rejectFriendRequest = async (requestId: bigint, currentUserId: bigi
         });
 
     if (!request) {
-        throw new Error("Request not found");
+        throw new Error("REQUEST_NOT_FOUND");
     }
 
     return prisma.friendships.update({
@@ -213,42 +264,42 @@ export const rejectFriendRequest = async (requestId: bigint, currentUserId: bigi
 
 export const getFriends = async (currentUserId: bigint) => {
     const friendships = await prisma.friendships.findMany({
-            where: {
-                status: "accepted",
-                OR: [
-                    {
-                        requester_id: currentUserId,
-                    },
-                    {
-                        addressee_id: currentUserId,
-                    },
-                ],
-            },
-
-            include: {
-                users_friendships_requester_idTousers: {
-                    select: {
-                        id: true,
-                        email: true,
-                        user_name: true,
-                        first_name: true,
-                        last_name: true,
-                        avatar: true,
-                    },
+        where: {
+            status: "accepted",
+            OR: [
+                {
+                    requester_id: currentUserId,
                 },
+                {
+                    addressee_id: currentUserId,
+                },
+            ],
+        },
 
-                users_friendships_addressee_idTousers: {
-                    select: {
-                        id: true,
-                        email: true,
-                        user_name: true,
-                        first_name: true,
-                        last_name: true,
-                        avatar: true,
-                    },
+        include: {
+            users_friendships_requester_idTousers: {
+                select: {
+                    id: true,
+                    email: true,
+                    user_name: true,
+                    first_name: true,
+                    last_name: true,
+                    avatar: true,
                 },
             },
-        });
+
+            users_friendships_addressee_idTousers: {
+                select: {
+                    id: true,
+                    email: true,
+                    user_name: true,
+                    first_name: true,
+                    last_name: true,
+                    avatar: true,
+                },
+            },
+        },
+    });
 
     return friendships.map((item) => {
         if (item.requester_id === currentUserId) {
@@ -276,23 +327,23 @@ export const getFriends = async (currentUserId: bigint) => {
 //Unfriend
 export const removeFriend = async (currentUserId: bigint, friendId: bigint) => {
     const friendship = await prisma.friendships.findFirst({
-            where: {
-                status: "accepted",
-                OR: [
-                    {
-                        requester_id: currentUserId,
-                        addressee_id: friendId,
-                    },
-                    {
-                        requester_id: friendId,
-                        addressee_id: currentUserId,
-                    },
-                ],
-            },
-        });
+        where: {
+            status: "accepted",
+            OR: [
+                {
+                    requester_id: currentUserId,
+                    addressee_id: friendId,
+                },
+                {
+                    requester_id: friendId,
+                    addressee_id: currentUserId,
+                },
+            ],
+        },
+    });
 
     if (!friendship) {
-        throw new Error("Friendship not found");
+        throw new Error("FRIENDSHIP_NOT_FOUND");
     }
 
     return prisma.friendships.delete({
@@ -305,33 +356,33 @@ export const removeFriend = async (currentUserId: bigint, friendId: bigint) => {
 //Block
 export const blockUser = async (currentUserId: bigint, targetUserId: bigint) => {
     if (currentUserId === targetUserId) {
-        throw new Error("Cannot block yourself");
+        throw new Error("CANNOT_BLOCK_YOURSELF");
     }
     const target = await prisma.users.findFirst({
-            where: {
-                id: targetUserId,
-                deleted: "NO",
-            },
-        });
+        where: {
+            id: targetUserId,
+            deleted: "NO",
+        },
+    });
 
     if (!target) {
-        throw new Error("User not found");
+        throw new Error("USER_NOT_FOUND");
     }
 
     const existing = await prisma.friendships.findFirst({
-            where: {
-                OR: [
-                    {
-                        requester_id: currentUserId,
-                        addressee_id: targetUserId,
-                    },
-                    {
-                        requester_id: targetUserId,
-                        addressee_id: currentUserId,
-                    },
-                ],
-            },
-        });
+        where: {
+            OR: [
+                {
+                    requester_id: currentUserId,
+                    addressee_id: targetUserId,
+                },
+                {
+                    requester_id: targetUserId,
+                    addressee_id: currentUserId,
+                },
+            ],
+        },
+    });
 
     if (existing) {
         return prisma.friendships.update({
