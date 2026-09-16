@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import * as userService from "../services/user.service";
+import * as userService from "../services/user.service.js";
 import bcrypt from "bcrypt";
 
 export const getUsers = async (req: Request, res: Response) => {

@@ -1,8 +1,8 @@
 import type { Response } from "express";
 import {Router} from "express";
-import * as authController from "../controllers/auth.controller"
-import {auth} from "../middlewares/auth.middleware";
-import type { AuthRequest } from "../middlewares/auth.middleware";
+import * as authController from "../controllers/auth.controller.js"
+import {auth} from "../middlewares/auth.middleware.js";
+import type { AuthRequest } from "../middlewares/auth.middleware.js";
 const router = Router();
 
 router.post("/register", authController.register);

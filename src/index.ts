@@ -1,8 +1,9 @@
 import express from "express";
 import dotenv from "dotenv";
-import userRouters from "./routes/user.routes";
-import authRouters from "./routes/auth.routes";
+import userRouters from "./routes/user.routes.js";
+import authRouters from "./routes/auth.routes.js";
 import cookieParser from "cookie-parser";
+import friendRouters from "./routes/friend.routes.js";
 
 dotenv.config();
 
@@ -11,6 +12,7 @@ app.use(express.json());
 app.use(cookieParser());
 app.use("/api/users", userRouters);
 app.use("/api/auth", authRouters);
+app.use("/api/friends", friendRouters);
 
 const PORT = process.env.PORT || 3000;
 
