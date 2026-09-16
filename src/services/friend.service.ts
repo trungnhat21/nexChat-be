@@ -391,6 +391,7 @@ export const blockUser = async (currentUserId: bigint, targetUserId: bigint) => 
             },
 
             data: {
+                
                 requester_id: currentUserId,
                 addressee_id: targetUserId,
                 status: "blocked",
