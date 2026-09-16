@@ -89,8 +89,7 @@ model refresh_tokens {
   expires_at DateTime  @db.DateTime(0)
   revoked_at DateTime? @db.DateTime(0)
   created_at DateTime  @default(now()) @db.DateTime(0)
-
-  user users @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user       users     @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@index([user_id])
   @@index([token_hash])
@@ -205,8 +204,7 @@ model user_two_factor_auth {
   enabled_at DateTime? @db.DateTime(0)
   created_at DateTime  @default(now()) @db.DateTime(0)
   updated_at DateTime  @updatedAt @db.DateTime(0)
-
-  users users @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_two_factor_user")
+  users      users     @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_two_factor_user")
 }
 
 model users {
@@ -234,9 +232,9 @@ model users {
   posts                                       posts[]
   profiles                                    profiles?
   reactions                                   reactions[]
+  refresh_tokens                              refresh_tokens[]
   two_factor_recovery_codes                   two_factor_recovery_codes[]
   user_two_factor_auth                        user_two_factor_auth?
-  refresh_tokens                              refresh_tokens[]
 }
 
 enum conversations_type {
