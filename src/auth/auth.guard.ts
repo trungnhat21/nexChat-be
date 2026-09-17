@@ -8,7 +8,7 @@ import {
 import { verifyAccessToken } from "../utils/token.js";
 import { AuthService } from "./auth.service.js";
 import type { AuthenticatedRequest, JwtPayload } from "./auth.types.js";
-import type { Reflector } from "@nestjs/core";
+import { Reflector } from "@nestjs/core";
 import { IS_PUBLIC_KEY } from "./public.decorator.js";
 
 @Injectable()
