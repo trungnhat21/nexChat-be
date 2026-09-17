@@ -18,42 +18,28 @@ pipeline {
                         node -v
                         npm -v
                         pm2 -v
-
-                        echo "=== Checkout developer ==="
-                        git checkout developer
-
-                        OLD_COMMIT=$(git rev-parse HEAD)
+                        node -e "if (Number(process.versions.node.split(String.fromCharCode(46))[0]) < 20) process.exit(1)"
 
                         echo "=== Fetch latest code ==="
-                        git fetch origin
+                        git fetch origin developer
+                        git checkout -f developer
                         git reset --hard origin/developer
 
-                        NEW_COMMIT=$(git rev-parse HEAD)
-
-                        echo "Old commit: $OLD_COMMIT"
-                        echo "New commit: $NEW_COMMIT"
-
-                        echo "=== Check dependencies ==="
-                        if git diff --name-only "$OLD_COMMIT" "$NEW_COMMIT" \
-                            | grep -Eq "^(package.json|package-lock.json)$"; then
-
-                            echo "Dependencies changed -> npm i -f"
-                            npm i -f
-                        else
-                            echo "Dependencies unchanged -> skip npm install"
-                        fi
-
-                        echo "=== Prisma DB Pull ==="
-                        npx prisma db pull
+                        echo "=== Install dependencies ==="
+                        npm ci --include=dev
 
                         echo "=== Prisma Generate ==="
                         npx prisma generate
 
-                        echo "=== Build backend ==="
+                        echo "=== Build NestJS backend ==="
                         npm run build
 
-                        echo "=== Restart PM2 ==="
-                        pm2 restart nex-chat-be
+                        test -f dist/main.js
+
+                        echo "=== Reload NestJS application with PM2 ==="
+                        pm2 startOrReload ecosystem.config.cjs --env production
+                        pm2 save
+                        pm2 describe nex-chat-be
 
                         echo "=== Deploy completed ==="
                     '
