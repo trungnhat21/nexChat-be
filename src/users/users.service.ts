@@ -1,7 +1,11 @@
-import { Injectable } from "@nestjs/common";
-import type { users_status } from "@prisma/client";
+import { Injectable, Logger } from "@nestjs/common";
+import type { users_deleted, users_status } from "@prisma/client";
 import bcrypt from "bcrypt";
 import { PrismaService } from "../prisma/prisma.service.js";
+import {
+    type GraphUser,
+    Neo4jUsersRepository,
+} from "./neo4j-users.repository.js";
 
 interface UpdateUserData {
     email: string | undefined;
@@ -12,12 +16,31 @@ interface UpdateUserData {
     avatar: string | undefined;
 }
 
+interface UserGraphSource {
+    id: bigint;
+    email: string;
+    status: users_status;
+    user_name: string | null;
+    first_name: string | null;
+    last_name: string | null;
+    avatar: string | null;
+    created_at: Date;
+    updated_at: Date;
+    deleted?: users_deleted;
+    deleted_at?: Date | null;
+}
+
 @Injectable()
 export class UsersService {
-    constructor(private readonly prisma: PrismaService) {}
+    private readonly logger = new Logger(UsersService.name);
 
-    getAllUsers() {
-        return this.prisma.users.findMany({
+    constructor(
+        private readonly prisma: PrismaService,
+        private readonly neo4jUsersRepository: Neo4jUsersRepository,
+    ) {}
+
+    async getAllUsers() {
+        const users = await this.prisma.users.findMany({
             where: {
                 deleted: "NO",
             },
@@ -36,10 +59,25 @@ export class UsersService {
                 id: "desc",
             },
         });
+
+        await this.observeGraph("getAllUsers", async () => {
+            const graphUserIds = await this.neo4jUsersRepository.findActiveUserIds();
+            const missingUserIds = users
+                .map((user) => user.id.toString())
+                .filter((id) => !graphUserIds.has(id));
+
+            if (missingUserIds.length > 0 || graphUserIds.size !== users.length) {
+                this.logger.warn(
+                    `User data drift detected: MariaDB=${users.length}, Neo4j=${graphUserIds.size}, missingInNeo4j=${missingUserIds.length}`,
+                );
+            }
+        });
+
+        return users;
     }
 
-    getUserById(id: bigint) {
-        return this.prisma.users.findUnique({
+    async getUserById(id: bigint) {
+        const user = await this.prisma.users.findUnique({
             where: {
                 id,
                 deleted: "NO",
@@ -56,18 +94,43 @@ export class UsersService {
                 updated_at: true,
             },
         });
+
+        await this.observeGraph("getUserById", async () => {
+            const graphUserExists =
+                await this.neo4jUsersRepository.findActiveUserById(id.toString());
+
+            if (Boolean(user) !== graphUserExists) {
+                this.logger.warn(
+                    `User data drift detected for user id ${id.toString()}`,
+                );
+            }
+        });
+
+        return user;
     }
 
-    getUserByEmail(email: string) {
-        return this.prisma.users.findUnique({
+    async getUserByEmail(email: string) {
+        const user = await this.prisma.users.findUnique({
             where: {
                 email,
                 deleted: "NO",
             },
         });
+
+        await this.observeGraph("getUserByEmail", async () => {
+            const graphUserId =
+                await this.neo4jUsersRepository.findActiveUserIdByEmail(email);
+            const mariaDbUserId = user?.id.toString() ?? null;
+
+            if (mariaDbUserId !== graphUserId) {
+                this.logger.warn("User data drift detected for an email lookup");
+            }
+        });
+
+        return user;
     }
 
-    createUser(
+    async createUser(
         email: string,
         passwordHash: string,
         firstName: string,
@@ -75,7 +138,7 @@ export class UsersService {
         userName?: string,
         avatar?: string,
     ) {
-        return this.prisma.users.create({
+        const user = await this.prisma.users.create({
             data: {
                 email,
                 password_hash: passwordHash,
@@ -97,6 +160,9 @@ export class UsersService {
                 updated_at: true,
             },
         });
+
+        await this.synchronizeGraph("createUser", user);
+        return user;
     }
 
     async createUserWithPassword(
@@ -118,7 +184,7 @@ export class UsersService {
         );
     }
 
-    updateUser(id: bigint, data: UpdateUserData) {
+    async updateUser(id: bigint, data: UpdateUserData) {
         const updateData = {
             ...(data.email !== undefined && { email: data.email }),
             ...(data.status !== undefined && { status: data.status }),
@@ -128,7 +194,7 @@ export class UsersService {
             ...(data.avatar !== undefined && { avatar: data.avatar }),
         };
 
-        return this.prisma.users.update({
+        const user = await this.prisma.users.update({
             where: { id },
             data: updateData,
             select: {
@@ -143,15 +209,74 @@ export class UsersService {
                 updated_at: true,
             },
         });
+
+        await this.synchronizeGraph("updateUser", user);
+        return user;
     }
 
-    deleteUser(id: bigint) {
-        return this.prisma.users.update({
+    async deleteUser(id: bigint) {
+        const user = await this.prisma.users.update({
             where: { id },
             data: {
                 deleted: "YES",
                 deleted_at: new Date(),
             },
         });
+
+        await this.synchronizeGraph("deleteUser", user);
+        return user;
+    }
+
+    private async observeGraph(
+        operation: string,
+        action: () => Promise<void>,
+    ): Promise<void> {
+        if (!this.neo4jUsersRepository.isEnabled()) {
+            return;
+        }
+
+        try {
+            await action();
+        } catch (error) {
+            this.logGraphError(operation, error);
+        }
+    }
+
+    private async synchronizeGraph(
+        operation: string,
+        user: UserGraphSource,
+    ): Promise<void> {
+        if (!this.neo4jUsersRepository.isEnabled()) {
+            return;
+        }
+
+        try {
+            await this.neo4jUsersRepository.upsertUser(this.toGraphUser(user));
+        } catch (error) {
+            this.logGraphError(operation, error);
+        }
+    }
+
+    private toGraphUser(user: UserGraphSource): GraphUser {
+        return {
+            id: user.id.toString(),
+            email: user.email,
+            status: user.status,
+            userName: user.user_name,
+            firstName: user.first_name,
+            lastName: user.last_name,
+            avatar: user.avatar,
+            deleted: user.deleted === "YES",
+            deletedAt: user.deleted_at?.toISOString() ?? null,
+            createdAt: user.created_at.toISOString(),
+            updatedAt: user.updated_at.toISOString(),
+        };
+    }
+
+    private logGraphError(operation: string, error: unknown): void {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        this.logger.error(
+            `Neo4j operation failed during ${operation}; MariaDB remains the source of truth: ${message}`,
+        );
     }
 }
