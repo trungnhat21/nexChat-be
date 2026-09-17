@@ -11,6 +11,7 @@ import type { Request, Response } from "express";
 import { AuthGuard } from "./auth.guard.js";
 import { AuthFlowError, AuthService } from "./auth.service.js";
 import type { AuthenticatedRequest } from "./auth.types.js";
+import { Public } from "./public.decorator.js";
 
 interface RegisterBody {
     email?: string;
@@ -35,9 +36,11 @@ interface VerifyTwoFactorBody {
 }
 
 @Controller("api/auth")
+@UseGuards(AuthGuard)
 export class AuthController {
     constructor(private readonly authService: AuthService) {}
 
+    @Public()
     @Post("register")
     async register(
         @Body() body: RegisterBody,
@@ -85,6 +88,7 @@ export class AuthController {
         }
     }
 
+    @Public()
     @Post("login")
     async login(
         @Body() body: LoginBody,
@@ -217,7 +221,6 @@ export class AuthController {
     }
 
     @Post("2fa/enable")
-    @UseGuards(AuthGuard)
     async enableTwoFactor(
         @Req() request: AuthenticatedRequest,
         @Body() body: OtpBody,

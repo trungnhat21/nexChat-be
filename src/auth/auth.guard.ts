@@ -8,13 +8,30 @@ import {
 import { verifyAccessToken } from "../utils/token.js";
 import { AuthService } from "./auth.service.js";
 import type { AuthenticatedRequest, JwtPayload } from "./auth.types.js";
+import type { Reflector } from "@nestjs/core";
+import { IS_PUBLIC_KEY } from "./public.decorator.js";
 
 @Injectable()
 export class AuthGuard implements CanActivate {
-    constructor(private readonly authService: AuthService) {}
+    constructor(
+        private readonly authService: AuthService,
+        private readonly reflector: Reflector,
+    ) { }
 
     async canActivate(context: ExecutionContext): Promise<boolean> {
+        const isPublic = this.reflector.getAllAndOverride<boolean>(
+            IS_PUBLIC_KEY,
+            [
+                context.getHandler(),
+                context.getClass(),
+            ],
+        );
+
+        if (isPublic) {
+            return true;
+        }
         const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
+
         const header = request.headers.authorization;
 
         if (!header) {
