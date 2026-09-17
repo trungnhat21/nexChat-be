@@ -6,6 +6,7 @@ import { Neo4jModule } from "./neo4j/neo4j.module.js";
 import { NotificationsModule } from "./notifications/notifications.module.js";
 import { PrismaModule } from "./prisma/prisma.module.js";
 import { UsersModule } from "./users/users.module.js";
+import { RedisModule } from "./redis/redis.module.js";
 
 @Module({
     imports: [
@@ -18,6 +19,7 @@ import { UsersModule } from "./users/users.module.js";
         AuthModule,
         FriendsModule,
         NotificationsModule,
+        RedisModule
     ],
 })
 export class AppModule {}
