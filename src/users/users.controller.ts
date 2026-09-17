@@ -6,11 +6,13 @@ import {
     Param,
     Patch,
     Post,
+    Query,
     Res,
 } from "@nestjs/common";
 import type { users_status } from "@prisma/client";
 import type { Response } from "express";
 import { UsersService } from "./users.service.js";
+import type { PaginationParams } from "../utils/common.js";
 
 interface CreateUserBody {
     email?: string;
@@ -35,9 +37,27 @@ export class UsersController {
     constructor(private readonly usersService: UsersService) {}
 
     @Get()
-    async getUsers(@Res() response: Response): Promise<Response> {
+    async getUsers(
+        @Res() response: Response,
+        @Query("page") page?: number,
+        @Query("size") size?: number,
+    ): Promise<Response> {
         try {
-            const users = await this.usersService.getAllUsers();
+            
+            const pagination: PaginationParams = {
+                page: page ?? 1,
+                size: size ?? 10,
+            };
+
+            if(pagination.page !== undefined && pagination.page < 1) {
+                pagination.page = 1;
+            }
+
+            if(pagination.size !== undefined && pagination.size < 1) {
+                pagination.size = 10;
+            }
+
+            const users = await this.usersService.getAllUsers(pagination);
             const data = users.map((user) => ({
                 ...user,
                 id: user.id.toString(),
@@ -47,7 +67,8 @@ export class UsersController {
                 success: true,
                 data,
             });
-        } catch {
+        } catch(error) {
+            console.error(error);
             return response.status(500).json({
                 success: false,
                 message: "Internal server error",

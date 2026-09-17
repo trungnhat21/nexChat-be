@@ -6,11 +6,14 @@ import {
     Injectable,
 } from "@nestjs/common";
 import { verifyAccessToken } from "../utils/token.js";
+import { AuthService } from "./auth.service.js";
 import type { AuthenticatedRequest, JwtPayload } from "./auth.types.js";
 
 @Injectable()
 export class AuthGuard implements CanActivate {
-    canActivate(context: ExecutionContext): boolean {
+    constructor(private readonly authService: AuthService) {}
+
+    async canActivate(context: ExecutionContext): Promise<boolean> {
         const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
         const header = request.headers.authorization;
 
@@ -18,9 +21,9 @@ export class AuthGuard implements CanActivate {
             throw this.unauthorized("Unauthorized");
         }
 
-        const token = header.split(" ")[1];
+        const [scheme, token, extraPart] = header.trim().split(/\s+/);
 
-        if (!token) {
+        if (scheme !== "Bearer" || !token || extraPart) {
             throw this.unauthorized("Unauthorized");
         }
 
@@ -31,7 +34,23 @@ export class AuthGuard implements CanActivate {
                 throw this.unauthorized("Invalid token");
             }
 
-            request.userId = BigInt(payload.userId);
+            if (!payload.sessionId) {
+                throw this.unauthorized("Invalid session");
+            }
+
+            const userId = BigInt(payload.userId);
+            const currentUser = await this.authService.getSessionCurrentUser(
+                payload.sessionId,
+                userId,
+            );
+
+            if (!currentUser) {
+                throw this.unauthorized("Session expired");
+            }
+
+            request.userId = userId;
+            request.sessionId = payload.sessionId;
+            request.currentUser = currentUser;
             return true;
         } catch (error) {
             if (error instanceof HttpException) {

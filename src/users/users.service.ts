@@ -6,6 +6,7 @@ import {
     type GraphUser,
     Neo4jUsersRepository,
 } from "./neo4j-users.repository.js";
+import type { PaginationParams } from "../utils/common.js";
 
 interface UpdateUserData {
     email: string | undefined;
@@ -37,9 +38,13 @@ export class UsersService {
     constructor(
         private readonly prisma: PrismaService,
         private readonly neo4jUsersRepository: Neo4jUsersRepository,
-    ) {}
+    ) { }
 
-    async getAllUsers() {
+    async getAllUsers(
+        pagination?: PaginationParams,
+    ) {
+        const skip = pagination?.page && pagination.size ? (pagination.page - 1) * pagination.size : undefined;
+        const take = pagination?.size ? Number(pagination.size) : undefined;
         const users = await this.prisma.users.findMany({
             where: {
                 deleted: "NO",
@@ -58,6 +63,8 @@ export class UsersService {
             orderBy: {
                 id: "desc",
             },
+            ...(skip !== undefined ? { skip } : {}),
+            ...(take !== undefined ? { take } : {}),
         });
 
         await this.observeGraph("getAllUsers", async () => {

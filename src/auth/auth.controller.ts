@@ -1,6 +1,7 @@
 import {
     Body,
     Controller,
+    Get,
     Post,
     Req,
     Res,
@@ -115,6 +116,7 @@ export class AuthController {
                 success: true,
                 message: "Login successfully",
                 accessToken: result.accessToken,
+                currentUser: result.currentUser,
             });
         } catch (error) {
             if (error instanceof AuthFlowError && error.code === "INVALID_CREDENTIALS") {
@@ -152,17 +154,16 @@ export class AuthController {
             return response.status(200).json({
                 success: true,
                 accessToken: result.accessToken,
-                user: {
-                    id: result.user.id.toString(),
-                    email: result.user.email,
-                    userName: result.user.user_name,
-                },
+                currentUser: result.currentUser,
+                // Keep the old field temporarily for existing clients.
+                user: result.currentUser,
             });
         } catch (error) {
             if (error instanceof AuthFlowError) {
                 const messages: Record<string, string> = {
                     INVALID_REFRESH_TOKEN: "Invalid refresh token",
                     REFRESH_TOKEN_NOT_FOUND: "Refresh token not found",
+                    SESSION_NOT_FOUND: "Session not found or expired",
                     USER_NOT_FOUND: "User not found",
                 };
                 const message = messages[error.code];
@@ -180,6 +181,18 @@ export class AuthController {
                 message: "Invalid or expired refresh token",
             });
         }
+    }
+
+    @Get("me")
+    @UseGuards(AuthGuard)
+    async getCurrentUser(
+        @Req() request: AuthenticatedRequest,
+        @Res() response: Response,
+    ): Promise<Response> {
+        return response.status(200).json({
+            success: true,
+            currentUser: request.currentUser,
+        });
     }
 
     @Post("2fa/setup")
@@ -267,6 +280,7 @@ export class AuthController {
             return response.status(200).json({
                 success: true,
                 accessToken: result.accessToken,
+                currentUser: result.currentUser,
             });
         } catch (error) {
             console.error("VERIFY 2FA ERROR:", error);
@@ -302,7 +316,7 @@ export class AuthController {
         const refreshToken: unknown = request.cookies.refreshToken;
 
         if (typeof refreshToken === "string" && refreshToken) {
-            await this.authService.revokeRefreshToken(refreshToken);
+            await this.authService.logout(refreshToken);
         }
 
         response.clearCookie("refreshToken");

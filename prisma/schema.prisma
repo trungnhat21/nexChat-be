@@ -237,6 +237,13 @@ model users {
   user_two_factor_auth                        user_two_factor_auth?
 }
 
+model system_error_logs {
+  id         Int       @id @default(autoincrement())
+  logs       String?   @db.Text
+  created_at DateTime? @default(now()) @db.Timestamp(0)
+  deleted    Boolean?  @default(false)
+}
+
 enum conversations_type {
   direct
   group

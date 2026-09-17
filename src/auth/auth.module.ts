@@ -8,6 +8,6 @@ import { AuthService } from "./auth.service.js";
     imports: [UsersModule],
     controllers: [AuthController],
     providers: [AuthService, AuthGuard],
-    exports: [AuthGuard],
+    exports: [AuthGuard, AuthService],
 })
 export class AuthModule {}

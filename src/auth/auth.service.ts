@@ -3,6 +3,7 @@ import bcrypt from "bcrypt";
 import crypto from "crypto";
 import { generateSecret, generateURI, verify } from "otplib";
 import { PrismaService } from "../prisma/prisma.service.js";
+import { RedisService } from "../redis/redis.service.js";
 import { UsersService } from "../users/users.service.js";
 import {
     createAccessToken,
@@ -11,7 +12,7 @@ import {
     verifyRefreshToken,
     verifyTwoFactorToken,
 } from "../utils/token.js";
-import type { JwtPayload } from "./auth.types.js";
+import type { CurrentUser, JwtPayload } from "./auth.types.js";
 
 export class AuthFlowError extends Error {
     constructor(readonly code: string) {
@@ -28,12 +29,29 @@ type LoginResult =
         kind: "authenticated";
         accessToken: string;
         refreshToken: string;
+        currentUser: CurrentUser;
     };
+
+interface CurrentUserSource {
+    id: bigint;
+    email: string;
+    status: string;
+    user_name: string | null;
+    first_name: string | null;
+    last_name: string | null;
+    avatar: string | null;
+    created_at: Date;
+    updated_at: Date;
+}
+
+const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
+const SESSION_KEY_PREFIX = "auth:session:";
 
 @Injectable()
 export class AuthService {
     constructor(
         private readonly prisma: PrismaService,
+        private readonly redis: RedisService,
         private readonly usersService: UsersService,
     ) {}
 
@@ -147,14 +165,11 @@ export class AuthService {
             };
         }
 
-        const accessToken = createAccessToken(user.id);
-        const refreshToken = createRefreshToken(user.id);
-        await this.saveRefreshToken(user.id, refreshToken);
+        const session = await this.createSession(user);
 
         return {
             kind: "authenticated",
-            accessToken,
-            refreshToken,
+            ...session,
         };
     }
 
@@ -165,10 +180,23 @@ export class AuthService {
             throw new AuthFlowError("INVALID_REFRESH_TOKEN");
         }
 
+        if (!payload.sessionId) {
+            throw new AuthFlowError("INVALID_REFRESH_TOKEN");
+        }
+
         const savedToken = await this.findRefreshToken(refreshToken);
 
         if (!savedToken) {
             throw new AuthFlowError("REFRESH_TOKEN_NOT_FOUND");
+        }
+
+        const sessionUser = await this.getSessionCurrentUser(
+            payload.sessionId,
+            BigInt(payload.userId),
+        );
+
+        if (!sessionUser) {
+            throw new AuthFlowError("SESSION_NOT_FOUND");
         }
 
         const user = await this.usersService.getUserById(BigInt(payload.userId));
@@ -177,10 +205,64 @@ export class AuthService {
             throw new AuthFlowError("USER_NOT_FOUND");
         }
 
+        const currentUser = this.toCurrentUser(user);
+        await this.saveSession(payload.sessionId, currentUser);
+
         return {
-            accessToken: createAccessToken(user.id),
-            user,
+            accessToken: createAccessToken(user.id, payload.sessionId),
+            currentUser,
         };
+    }
+
+    async getCurrentUser(userId: bigint): Promise<CurrentUser> {
+        const user = await this.usersService.getUserById(userId);
+
+        if (!user) {
+            throw new AuthFlowError("USER_NOT_FOUND");
+        }
+
+        return this.toCurrentUser(user);
+    }
+
+    async getSessionCurrentUser(
+        sessionId: string,
+        userId: bigint,
+    ): Promise<CurrentUser | null> {
+        const value = await this.redis.get(this.getSessionKey(sessionId));
+
+        if (!value) {
+            return null;
+        }
+
+        try {
+            const currentUser = JSON.parse(value) as CurrentUser;
+
+            if (currentUser.id !== userId.toString()) {
+                return null;
+            }
+
+            return currentUser;
+        } catch {
+            await this.deleteSession(sessionId);
+            return null;
+        }
+    }
+
+    async logout(refreshToken: string): Promise<void> {
+        await this.revokeRefreshToken(refreshToken);
+
+        let sessionId: string | undefined;
+
+        try {
+            const payload = verifyRefreshToken(refreshToken) as JwtPayload;
+            sessionId = payload.sessionId;
+        } catch {
+            // An invalid/expired cookie must not prevent an idempotent logout.
+        }
+
+        if (sessionId) {
+            await this.deleteSession(sessionId);
+        }
     }
 
     async setupTwoFactor(userId: bigint) {
@@ -263,13 +345,58 @@ export class AuthService {
             throw new AuthFlowError("INVALID_OTP");
         }
 
-        const accessToken = createAccessToken(userId);
-        const refreshToken = createRefreshToken(userId);
-        await this.saveRefreshToken(userId, refreshToken);
+        const user = await this.usersService.getUserById(userId);
+
+        if (!user) {
+            throw new AuthFlowError("USER_NOT_FOUND");
+        }
+
+        return this.createSession(user);
+    }
+
+    private async createSession(user: CurrentUserSource) {
+        const sessionId = crypto.randomUUID();
+        const currentUser = this.toCurrentUser(user);
+        const accessToken = createAccessToken(user.id, sessionId);
+        const refreshToken = createRefreshToken(user.id, sessionId);
+
+        await this.saveRefreshToken(user.id, refreshToken);
+        await this.saveSession(sessionId, currentUser);
 
         return {
             accessToken,
             refreshToken,
+            currentUser,
+        };
+    }
+
+    private saveSession(sessionId: string, currentUser: CurrentUser) {
+        return this.redis.set(
+            this.getSessionKey(sessionId),
+            JSON.stringify(currentUser),
+            SESSION_TTL_SECONDS,
+        );
+    }
+
+    private deleteSession(sessionId: string) {
+        return this.redis.del(this.getSessionKey(sessionId));
+    }
+
+    private getSessionKey(sessionId: string): string {
+        return `${SESSION_KEY_PREFIX}${sessionId}`;
+    }
+
+    private toCurrentUser(user: CurrentUserSource): CurrentUser {
+        return {
+            id: user.id.toString(),
+            email: user.email,
+            status: user.status,
+            userName: user.user_name,
+            firstName: user.first_name,
+            lastName: user.last_name,
+            avatar: user.avatar,
+            createdAt: user.created_at.toISOString(),
+            updatedAt: user.updated_at.toISOString(),
         };
     }
 }

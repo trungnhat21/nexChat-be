@@ -19,10 +19,11 @@ if (!TWO_FA_SECRET) {
     throw new Error("JWT_2FA_SECRET is missing");
 }
 
-export const createAccessToken = (userId: bigint) => {
+export const createAccessToken = (userId: bigint, sessionId: string) => {
     return jwt.sign (
         {
             userId: userId.toString(),
+            sessionId,
             type: "access",
         },
         ACCESS_SECRET,
@@ -32,10 +33,11 @@ export const createAccessToken = (userId: bigint) => {
     )
 };
 
-export const createRefreshToken = (userId: bigint) => {
+export const createRefreshToken = (userId: bigint, sessionId: string) => {
     return jwt.sign(
         {
             userId: userId.toString(),
+            sessionId,
             type: "refresh",
         },
         REFRESH_SECRET,
@@ -49,7 +51,7 @@ export const createTwoFactorToken = (userId: bigint) => {
     return jwt.sign(
         {
             userId: userId.toString(),
-            type: "two_factor",
+            type: "2fa",
         },
         TWO_FA_SECRET,
         {
