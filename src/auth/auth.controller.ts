@@ -196,7 +196,7 @@ export class AuthController {
     ): Promise<Response> {
         return response.status(200).json({
             success: true,
-            currentUser: request.currentUser,
+            currentUser: await this.authService.getCurrentUser(request.userId!),
         });
     }
 

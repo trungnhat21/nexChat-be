@@ -15,7 +15,12 @@ type PostRow = Prisma.postsGetPayload<{ include: typeof postInclude }>;
 export class PostsService {
     constructor(private readonly prisma: PrismaService, private readonly storage: PostStorageService) {}
 
-    async list(userId: bigint, cursor?: bigint, search = "") {
+    async list(userId: bigint, cursor?: bigint, search = "", authorId?: bigint) {
+        const author = authorId === undefined ? null : await this.prisma.users.findFirst({
+            where: { id: authorId, deleted: "NO" },
+            select: { id: true, first_name: true, last_name: true, user_name: true, avatar: true, created_at: true, profiles: { select: { display_name: true, avatar_url: true, cover_url: true, bio: true } } },
+        });
+        if (authorId !== undefined && !author) throw new NotFoundException("Account not found.");
         const friends = await this.prisma.friendships.findMany({
             where: { status: "accepted", OR: [{ requester_id: userId }, { addressee_id: userId }] },
             select: { requester_id: true, addressee_id: true },
@@ -25,16 +30,26 @@ export class PostsService {
             { privacy: "public" }, { user_id: userId }, { privacy: "friends", user_id: { in: friendIds } },
         ] };
         const where: Prisma.postsWhereInput = { deleted_at: null, AND: [visible] };
-        if (cursor !== undefined) where.id = { lt: cursor };
+        if (authorId !== undefined) where.user_id = authorId;
         if (search) where.AND = [visible, { OR: [
             { content: { contains: search } },
             { users: { first_name: { contains: search } } }, { users: { last_name: { contains: search } } },
             { users: { user_name: { contains: search } } },
         ] }];
-        const rows = await this.prisma.posts.findMany({ where, orderBy: { id: "desc" }, take: 21, include: postInclude });
+        const countWhere = { ...where };
+        if (cursor !== undefined) where.id = { lt: cursor };
+        const [rows, total] = await Promise.all([
+            this.prisma.posts.findMany({ where, orderBy: { id: "desc" }, take: 21, include: postInclude }),
+            authorId === undefined ? Promise.resolve(undefined) : this.prisma.posts.count({ where: countWhere }),
+        ]);
         const hasMore = rows.length > 20;
         const posts = await this.serialize(rows.slice(0,20), userId);
-        return { success: true, posts, nextCursor: hasMore ? posts.at(-1)?.id ?? null : null };
+        return { success: true, posts, nextCursor: hasMore ? posts.at(-1)?.id ?? null : null,
+            ...(author ? { total, author: { id: author.id.toString(), name: author.profiles?.display_name || [author.last_name, author.first_name].filter(Boolean).join(" ") || author.user_name || "User", handle: author.user_name, avatar: await this.profileImage(author.profiles?.avatar_url || author.avatar), cover: await this.profileImage(author.profiles?.cover_url ?? null), bio: author.profiles?.bio ?? null, createdAt: author.created_at.toISOString() } } : {}),
+        };
+    }
+    private async profileImage(value: string | null): Promise<string | null> {
+        return value?.startsWith("profiles/") ? this.storage.url(value, null) : value;
     }
     private async serialize(rows: PostRow[], userId: bigint) {
         const ids = rows.map(row => row.id);
@@ -46,7 +61,7 @@ export class PostsService {
             id: row.id.toString(), content: row.content ?? "", privacy: row.privacy,
             createdAt: row.created_at.toISOString(), updatedAt: row.updated_at.toISOString(),
             canEdit: row.user_id === userId,
-            author: { id: row.users.id.toString(), name: row.users.profiles?.display_name || [row.users.last_name, row.users.first_name].filter(Boolean).join(" ") || row.users.user_name || "Người dùng", handle: row.users.user_name, avatar: row.users.profiles?.avatar_url || row.users.avatar },
+            author: { id: row.users.id.toString(), name: row.users.profiles?.display_name || [row.users.last_name, row.users.first_name].filter(Boolean).join(" ") || row.users.user_name || "Người dùng", handle: row.users.user_name, avatar: await this.profileImage(row.users.profiles?.avatar_url || row.users.avatar) },
             likes: reactions.find(reaction => reaction.target_id === row.id)?._count._all ?? 0,
             comments: row._count.comments,
             media: await Promise.all(attachments.filter(file => file.owner_id === row.id).map(async file => ({

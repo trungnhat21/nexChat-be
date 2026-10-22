@@ -9,6 +9,8 @@
 - Chỉ tác giả được sửa/xóa. Khi sửa, FE gửi ID của media cần giữ; media bị bỏ được dọn khỏi MinIO sau khi DB commit. Xóa bài dùng deleted_at và dọn attachment.
 - Bảng tin gồm bài công khai, bài của chính mình và bài giới hạn bạn bè của các quan hệ accepted. Tìm kiếm và phân trang thực hiện ở BE.
 
+Profile dùng authorId để lọc tác giả ngay tại BE. /profile lấy ID từ phiên đăng nhập; /profile/:userId lấy ID trên URL. Phản hồi có author (thông tin hiển thị) và total (số bài người xem được phép xem). Phân trang luôn giữ authorId.
+
 ## Cấu hình
 
 Dùng các biến đã có trong BE .env:
@@ -31,7 +33,7 @@ Tất cả endpoint yêu cầu Authorization: Bearer <accessToken>.
 
 | Method | URL | Chức năng |
 | --- | --- | --- |
-| GET | /api/posts?search=...&cursor=... | Tối đa 20 bài, nextCursor để tải tiếp |
+| GET | /api/posts?search=...&cursor=...&authorId=... | Tối đa 20 bài, nextCursor để tải tiếp |
 | POST | /api/posts | Tạo bài; multipart |
 | PATCH | /api/posts/:id | Sửa bài; multipart |
 | DELETE | /api/posts/:id | Xóa bài của mình |
@@ -69,6 +71,22 @@ FE:
 
 ## Phạm vi và giới hạn
 
-- Chỉ phần bài viết của home và danh tính tài khoản liên quan được nối dữ liệu thật. Story, widget xu hướng/gợi ý và trang profile vẫn nằm ngoài phạm vi API bài viết này.
+- Bài viết của home và profile, media liên quan và danh tính tài khoản dùng dữ liệu thật. Story, widget xu hướng/gợi ý và các trường hồ sơ chưa có API vẫn nằm ngoài phạm vi này.
 - Thích, bình luận và lưu bài hiện thông báo chưa hỗ trợ, không thêm tương tác giả vào số liệu thật.
 - Transaction DB và MinIO không thể commit nguyên tử. Upload mới được dọn nếu DB thất bại. Nếu MinIO mất kết nối lúc dọn file, bài vẫn được cập nhật/xóa trong DB và BE ghi log "Media cleanup pending" kèm key để quản trị viên dọn lại. Chưa có worker retry nền.
+
+## Ảnh đại diện và ảnh bìa
+
+- PATCH /api/profile/images/avatar hoặc /api/profile/images/cover, Bearer token, multipart có đúng một trường file tên image.
+- Chỉ cập nhật tài khoản của phiên đăng nhập; không nhận userId từ client.
+- Nhận JPEG, PNG, GIF, WebP tối đa 10 MiB. File lưu dưới profiles/<userId>/ trong bucket hiện có.
+- DB lưu object key, không lưu URL có chữ ký. Avatar được lưu đồng bộ ở users.avatar và profiles.avatar_url; cover lưu ở profiles.cover_url. API ký URL khi đọc để ảnh dùng được sau reload.
+- Đổi ảnh thực hiện ngay khi chọn file; chỉ cập nhật giao diện sau khi BE lưu thành công. Ảnh cũ được dọn sau DB commit; upload mới được dọn nếu DB thất bại.
+- DB local đã được bổ sung profiles.cover_url. Với DB khác chưa có cột này, áp dụng một lần prisma/patches/20261022_profile_cover.sql rồi chạy npx prisma generate. Không reset database.
+- Các trường văn bản trong hộp chỉnh sửa hồ sơ vẫn là bản xem thử; endpoint này chỉ lưu ảnh.
+
+Kiểm tra upload bằng MySQL/MinIO thật, dùng fixture rollback và file tạm tự dọn:
+
+    npm run build
+    $env:PROFILE_IMAGE_INTEGRATION = "1"
+    node --test tests/profile-images.test.mjs

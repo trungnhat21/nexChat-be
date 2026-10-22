@@ -22,9 +22,9 @@ export class PostStorageService {
         const { endpoint, credentials, region } = this.settings();
         return this.client ??= new S3Client({ endpoint, credentials, region, forcePathStyle: true, requestChecksumCalculation: "WHEN_REQUIRED", responseChecksumValidation: "WHEN_REQUIRED" });
     }
-    async upload(userId: bigint, file: UploadedMedia): Promise<StoredMedia> {
+    async upload(userId: bigint, file: UploadedMedia, folder: "posts" | "profiles" = "posts"): Promise<StoredMedia> {
         const extensions: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp", "video/mp4": "mp4", "video/webm": "webm" };
-        const key = `posts/${userId}/${randomUUID()}.${extensions[file.mimetype]}`;
+        const key = `${folder}/${userId}/${randomUUID()}.${extensions[file.mimetype]}`;
         try {
             await this.getClient().send(new PutObjectCommand({
                 Bucket: this.settings().bucket, Key: key, Body: file.buffer,
@@ -38,15 +38,15 @@ export class PostStorageService {
         }
     }
     async url(key: string, type: string | null): Promise<string> {
-        if (!key.startsWith("posts/")) throw new ServiceUnavailableException("Đường dẫn media chưa được hỗ trợ.");
+        if (!key.startsWith("posts/") && !key.startsWith("profiles/")) throw new ServiceUnavailableException("Đường dẫn media chưa được hỗ trợ.");
         return getSignedUrl(this.getClient(), new GetObjectCommand({
             Bucket: this.settings().bucket, Key: key,
-            ResponseContentType: type || "application/octet-stream", ResponseContentDisposition: "inline",
+            ResponseContentType: type || ({ jpg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", mp4: "video/mp4", webm: "video/webm" } as Record<string, string>)[key.split(".").at(-1) ?? ""] || "application/octet-stream", ResponseContentDisposition: "inline",
         }), { expiresIn: 3600 });
     }
     async remove(keys: string[]): Promise<void> {
         await Promise.all(keys.map(async key => {
-            if (!/^posts\/[1-9]\d*\/[a-f0-9-]+\.(jpg|png|gif|webp|mp4|webm)$/.test(key)) return;
+            if (!/^(posts|profiles)\/[1-9]\d*\/[a-f0-9-]+\.(jpg|png|gif|webp|mp4|webm)$/.test(key)) return;
             try { await this.getClient().send(new DeleteObjectCommand({ Bucket: this.settings().bucket, Key: key })); }
             catch (error) { this.logger.error(`Media cleanup pending: ${key} (${error instanceof Error ? error.name : "unknown"}).`); }
         }));

@@ -7,7 +7,7 @@ import { POST_LIMITS, type UploadedMedia } from "./posts.types.js";
 import { parseId, parseMutation } from "./posts.validation.js";
 
 const mediaInterceptor = FilesInterceptor("media", POST_LIMITS.files, {
-    limits: { files: POST_LIMITS.files, fileSize: POST_LIMITS.fileBytes, fields: 3, fieldSize: 24 * 1024, parts: 8 },
+    limits: { files: POST_LIMITS.files, fileSize: POST_LIMITS.fileBytes, fields: 3, fieldSize: 24 * 1024, parts: 9 },
 });
 
 @Controller("api/posts")
@@ -15,9 +15,9 @@ const mediaInterceptor = FilesInterceptor("media", POST_LIMITS.files, {
 export class PostsController {
     constructor(private readonly posts: PostsService) {}
     @Get()
-    list(@Req() request: AuthenticatedRequest, @Query("cursor") cursor: unknown, @Query("search") search: unknown) {
+    list(@Req() request: AuthenticatedRequest, @Query("cursor") cursor: unknown, @Query("search") search: unknown, @Query("authorId") authorId: unknown) {
         if (search !== undefined && (typeof search !== "string" || search.length > 200)) throw new BadRequestException("Tìm kiếm tối đa 200 ký tự.");
-        return this.posts.list(request.userId!, cursor === undefined ? undefined : parseId(cursor), typeof search === "string" ? search.trim() : "");
+        return this.posts.list(request.userId!, cursor === undefined ? undefined : parseId(cursor), typeof search === "string" ? search.trim() : "", authorId === undefined ? undefined : parseId(authorId));
     }
     @Post()
     @UseInterceptors(mediaInterceptor)
