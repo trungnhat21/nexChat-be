@@ -138,6 +138,7 @@ export class AuthController {
         }
     }
 
+    @Public()
     @Post("refresh")
     async refresh(
         @Req() request: Request,
@@ -311,6 +312,7 @@ export class AuthController {
         }
     }
 
+    @Public()
     @Post("logout")
     async logout(
         @Req() request: Request,

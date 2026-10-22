@@ -1,3 +1,4 @@
+import { PostsModule } from "./posts/posts.module.js";
 import { Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { AuthModule } from "./auth/auth.module.js";
@@ -19,6 +20,7 @@ import { RedisModule } from "./redis/redis.module.js";
         AuthModule,
         FriendsModule,
         NotificationsModule,
+        PostsModule,
         RedisModule
     ],
 })
