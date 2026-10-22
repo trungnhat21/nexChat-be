@@ -41,3 +41,15 @@ export function validateMedia(files: UploadedMedia[]): void {
 export function safeFilename(name: string): string {
     return basename(name.replace(/\\/g, "/")).replace(/[\x00-\x1f\x7f]/g, "").slice(0, 255) || "media";
 }
+
+export function parseComment(raw: unknown): string {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new BadRequestException("Bình luận không hợp lệ.");
+    const body = raw as Record<string, unknown>;
+    if (Object.keys(body).some(key => key !== "content") || typeof body.content !== "string" || !body.content.trim() || body.content.length > 2000) throw new BadRequestException("Bình luận cần từ 1 đến 2.000 ký tự. Chưa hỗ trợ trả lời bình luận.");
+    return body.content.trim();
+}
+export function parseRepost(raw: unknown) {
+    const body = (raw ?? {}) as Record<string, unknown>;
+    if (typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => key !== "content" && key !== "privacy")) throw new BadRequestException("Nội dung đăng lại không hợp lệ.");
+    return parseMutation({ content: body.content ?? "", privacy: body.privacy ?? "public" });
+}

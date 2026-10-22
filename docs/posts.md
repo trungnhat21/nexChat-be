@@ -90,3 +90,33 @@ Kiểm tra upload bằng MySQL/MinIO thật, dùng fixture rollback và file t�
     npm run build
     $env:PROFILE_IMAGE_INTEGRATION = "1"
     node --test tests/profile-images.test.mjs
+
+### Post likes
+
+- `PUT /api/posts/:id/like` likes a visible post.
+- `DELETE /api/posts/:id/like` removes the current account's like.
+- Both require a valid session and return `{ success, id, liked, likes }`.
+- Calls are idempotent. A transaction locks the post before checking privacy and mutating its reaction; the existing `uq_reaction(user_id, target_type, target_id)` also prevents duplicates.
+- Feed and profile post responses include account-specific `liked` and total `likes` (only post reactions of type like). Private/friends/deleted posts retain their access rules.
+- No schema changes or new dependencies.
+- Verification: build the backend, then run `node --test tests/likes.test.mjs`. Set `LIKES_DB_TESTS=1` to include the MySQL concurrency/persistence test (creates isolated fixture accounts and removes them in finally).
+
+### Comments, saves and reposts
+
+All endpoints require the existing authenticated session; account identity comes exclusively from that session.
+
+- `GET /api/posts/:id`: retrieve a visible post for the FE permalink `/posts/:id`.
+- `GET /api/posts/:id/comments?cursor=`: newest-first top-level comments, 20 per page, with author, timestamps, ownership flag, total and next cursor.
+- `POST /api/posts/:id/comments` and `PATCH /api/posts/:id/comments/:commentId`: JSON `{ content }`, nonempty and at most 2,000 characters. Replies/extra fields are rejected in this version.
+- `DELETE /api/posts/:id/comments/:commentId`: soft-delete only the current account's comment. Editing and deletion also check post visibility and comment/post association.
+- `PUT /api/posts/:id/save` / `DELETE /api/posts/:id/save`: idempotent bookmark/unbookmark. The composite primary key prevents duplicate bookmarks.
+- `GET /api/posts/saved?cursor=&search=`: only the session account's saved, currently visible posts. A supplied authorId never selects another account's bookmarks. Invisible/deleted posts are excluded; unbookmarking is still allowed after access is revoked.
+- `POST /api/posts/:id/repost`: JSON `{ content?: string, privacy?: "public" | "friends" | "private" }`. Creates a new post referencing the original, without copying its text/media. Sharing another repost resolves to the root. Both source and root must be visible at creation.
+- Post payloads add `saved`, `isRepost`, and `original`. Original content/media is re-authorized for every reader. If deleted or inaccessible, original is null and the UI displays an unavailable notice. A hard-deleted original uses ON DELETE SET NULL; isRepost preserves the unavailable marker.
+- The UI separates copy-link from repost. Copying a URL does not grant access to a private post. Home/profile/saved cards share the comment/save/share UI; the saved page is at `/saved`.
+
+Schema: apply the additive patch `prisma/patches/20261022_post_interactions.sql` once on other databases, then run `npx prisma generate`. It adds the original-post reference and `saved_posts`; it does not remove existing records. The patch has already been applied to the local database during implementation.
+
+Verification after backend build:
+`node --test tests/interactions.test.mjs`
+Set `INTERACTIONS_DB_TESTS=1` for the MySQL test. Its users/comments/bookmarks/reposts are isolated fixtures inside a rolled-back transaction.

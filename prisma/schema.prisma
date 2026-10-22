@@ -146,18 +146,35 @@ model notifications {
 }
 
 model posts {
-  id         BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
-  user_id    BigInt        @db.UnsignedBigInt
-  content    String?       @db.Text
-  privacy    posts_privacy @default(public)
-  created_at DateTime      @default(now()) @db.DateTime(0)
-  updated_at DateTime      @default(now()) @db.DateTime(0)
-  deleted_at DateTime?     @db.DateTime(0)
-  comments   comments[]
-  users      users         @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_posts_user")
+  id             BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
+  user_id        BigInt        @db.UnsignedBigInt
+  content        String?       @db.Text
+  privacy        posts_privacy @default(public)
+  created_at     DateTime      @default(now()) @db.DateTime(0)
+  updated_at     DateTime      @default(now()) @db.DateTime(0)
+  deleted_at     DateTime?     @db.DateTime(0)
+  shared_post_id BigInt?       @db.UnsignedBigInt
+  is_repost      Boolean       @default(false)
+  comments       comments[]
+  original       posts?        @relation("PostReposts", fields: [shared_post_id], references: [id], onUpdate: NoAction, map: "fk_posts_original")
+  reposts        posts[]       @relation("PostReposts")
+  users          users         @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_posts_user")
+  saved_posts    saved_posts[]
 
+  @@index([shared_post_id], map: "idx_posts_original")
   @@index([created_at], map: "idx_posts_created_at")
   @@index([user_id], map: "idx_posts_user")
+}
+
+model saved_posts {
+  user_id    BigInt   @db.UnsignedBigInt
+  post_id    BigInt   @db.UnsignedBigInt
+  created_at DateTime @default(now()) @db.DateTime(0)
+  posts      posts    @relation(fields: [post_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_saved_posts_post")
+  users      users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_saved_posts_user")
+
+  @@id([user_id, post_id])
+  @@index([post_id], map: "idx_saved_posts_post")
 }
 
 model profiles {
@@ -234,6 +251,7 @@ model users {
   profiles                                    profiles?
   reactions                                   reactions[]
   refresh_tokens                              refresh_tokens[]
+  saved_posts                                 saved_posts[]
   two_factor_recovery_codes                   two_factor_recovery_codes[]
   user_two_factor_auth                        user_two_factor_auth?
 }
