@@ -1,9 +1,10 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import type { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { PostStorageService } from "./post-storage.service.js";
 import { POST_LIMITS, type PostView, type PostMutation, type StoredMedia, type UploadedMedia } from "./posts.types.js";
 import { validateMedia } from "./posts.validation.js";
+import { NotificationsService } from "../notifications/notifications.service.js";
 
 const postInclude = {
     users: { select: { id: true, first_name: true, last_name: true, user_name: true, avatar: true, profiles: { select: { display_name: true, avatar_url: true } } } },
@@ -13,7 +14,12 @@ type PostRow = Prisma.postsGetPayload<{ include: typeof postInclude }>;
 
 @Injectable()
 export class PostsService {
-    constructor(private readonly prisma: PrismaService, private readonly storage: PostStorageService) {}
+    private readonly logger = new Logger(PostsService.name);
+    constructor(private readonly prisma: PrismaService, private readonly storage: PostStorageService, private readonly notifications: NotificationsService) {}
+
+    private publishPostNotifications(authorId: bigint, postId: bigint, privacy: PostMutation["privacy"]) {
+        void this.notifications.notifyPostPublished(authorId, postId, privacy).catch(error => this.logger.error("Failed to notify post audience", error));
+    }
 
     async list(userId: bigint, cursor?: bigint, search = "", authorId?: bigint, savedOnly = false) {
         const author = authorId === undefined ? null : await this.prisma.users.findFirst({
@@ -126,6 +132,7 @@ export class PostsService {
             if (originalId !== source.id) await this.visiblePost(userId, originalId, tx, true);
             return tx.posts.create({ data: { user_id: userId, content: input.content, privacy: input.privacy, shared_post_id: originalId, is_repost: true }, include: postInclude });
         }, { maxWait: 15000, timeout: 15000 });
+        this.publishPostNotifications(userId, row.id, input.privacy);
         return { success: true, post: (await this.serialize([row], userId))[0] };
     }
     private async commentView(row: Prisma.commentsGetPayload<{ include: { users: typeof postInclude.users } }>, userId: bigint) {
@@ -139,24 +146,31 @@ export class PostsService {
         await this.visiblePost(userId, id);
         const where = { post_id: id, deleted_at: null, parent_comment_id: null };
         const [rows, total] = await Promise.all([
-            this.prisma.comments.findMany({ where: { ...where, ...(cursor ? { id: { lt: cursor } } : {}) }, orderBy: { id: "desc" }, take: 21, include: { users: postInclude.users } }),
-            this.prisma.comments.count({ where }),
+            this.prisma.comments.findMany({ where: { ...where, ...(cursor ? { id: { lt: cursor } } : {}) }, orderBy: { id: "desc" }, take: 21, include: { users: postInclude.users, other_comments: { where: { deleted_at: null }, orderBy: { id: "asc" }, include: { users: postInclude.users } } } }),
+            this.prisma.comments.count({ where: { post_id: id, deleted_at: null } }),
         ]);
-        return { success: true, comments: await Promise.all(rows.slice(0,20).map(row => this.commentView(row, userId))), total,
+        const comments = await Promise.all(rows.slice(0,20).map(async row => ({ ...await this.commentView(row, userId), replies: await Promise.all(row.other_comments.map(reply => this.commentView(reply, userId))) })));
+        return { success: true, comments, total,
             nextCursor: rows.length > 20 ? rows[19]!.id.toString() : null };
     }
-    async mutateComment(userId: bigint, postId: bigint, content: string | null, commentId?: bigint) {
+    async mutateComment(userId: bigint, postId: bigint, content: string | null, commentId?: bigint, parentCommentId?: bigint) {
         const result = await this.prisma.$transaction(async tx => {
             await this.visiblePost(userId, postId, tx, true);
+            if (parentCommentId !== undefined) {
+                const parent = await tx.comments.findFirst({ where: { id: parentCommentId, post_id: postId, deleted_at: null, parent_comment_id: null }, select: { id: true } });
+                if (!parent) throw new NotFoundException("Chỉ có thể trả lời bình luận gốc còn tồn tại.");
+            }
             if (commentId) {
-                const current = await tx.comments.findFirst({ where: { id: commentId, post_id: postId, deleted_at: null, parent_comment_id: null } });
+                const current = await tx.comments.findFirst({ where: { id: commentId, post_id: postId, deleted_at: null } });
                 if (!current) throw new NotFoundException("Bình luận không tồn tại.");
                 if (current.user_id !== userId) throw new ForbiddenException("Bạn chỉ được sửa hoặc xóa bình luận của mình.");
+                if (parentCommentId !== undefined) throw new BadRequestException("Không thể đổi bình luận thành câu trả lời.");
+                if (content === null && current.parent_comment_id === null) await tx.comments.updateMany({ where: { parent_comment_id: current.id, deleted_at: null }, data: { deleted_at: new Date(), updated_at: new Date() } });
             }
             const row = commentId
                 ? await tx.comments.update({ where: { id: commentId }, data: content === null ? { deleted_at: new Date(), updated_at: new Date() } : { content, updated_at: new Date() }, include: { users: postInclude.users } })
-                : await tx.comments.create({ data: { user_id: userId, post_id: postId, content: content! }, include: { users: postInclude.users } });
-            const total = await tx.comments.count({ where: { post_id: postId, deleted_at: null, parent_comment_id: null } });
+                : await tx.comments.create({ data: { user_id: userId, post_id: postId, content: content!, parent_comment_id: parentCommentId ?? null }, include: { users: postInclude.users } });
+            const total = await tx.comments.count({ where: { post_id: postId, deleted_at: null } });
             return { row, total };
         }, { maxWait: 15000, timeout: 15000 });
         return { success: true, comment: content === null ? null : await this.commentView(result.row, userId), total: result.total };
@@ -214,6 +228,7 @@ export class PostsService {
                 return post;
             });
         } catch (error) { await this.storage.remove(uploaded.map(file => file.key)); throw error; }
+        this.publishPostNotifications(userId, row.id, input.privacy);
         return { success: true, post: (await this.serialize([row], userId))[0] };
     }
     async update(userId: bigint, id: bigint, input: PostMutation, files: UploadedMedia[]) {

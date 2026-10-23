@@ -4,6 +4,7 @@ import { PrismaModule } from "../prisma/prisma.module.js";
 import { PostsController } from "./posts.controller.js";
 import { PostsService } from "./posts.service.js";
 import { StorageModule } from "../storage/storage.module.js";
+import { NotificationsModule } from "../notifications/notifications.module.js";
 
-@Module({ imports: [AuthModule, PrismaModule, StorageModule], controllers: [PostsController], providers: [PostsService] })
+@Module({ imports: [AuthModule, PrismaModule, StorageModule, NotificationsModule], controllers: [PostsController], providers: [PostsService] })
 export class PostsModule {}

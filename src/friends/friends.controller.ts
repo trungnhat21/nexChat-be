@@ -20,10 +20,48 @@ interface FriendRequestBody {
     addresseeId?: string | number | bigint | boolean;
 }
 
+function parseId(value: unknown): bigint | null {
+    const text = typeof value === "string" ? value : typeof value === "number" && Number.isSafeInteger(value) ? String(value) : "";
+    if (!/^[1-9]\d{0,19}$/.test(text)) return null;
+    const id = BigInt(text);
+    return id <= 18446744073709551615n ? id : null;
+}
+
 @Controller("api/friends")
 @UseGuards(AuthGuard)
 export class FriendsController {
     constructor(private readonly friendsService: FriendsService) {}
+
+    @Get("suggestions")
+    async getSuggestions(@Req() request: AuthenticatedRequest, @Res() response: Response): Promise<Response> {
+        try { return response.status(200).json({ success: true, users: await this.friendsService.getSuggestions(request.userId!) }); }
+        catch { return response.status(500).json({ success: false, message: "Internal server error" }); }
+    }
+
+    @Get("relationship/:userId")
+    async getRelationship(@Req() request: AuthenticatedRequest, @Param("userId") rawId: string, @Res() response: Response): Promise<Response> {
+        const id = parseId(rawId);
+        if (!id) return response.status(400).json({ success: false, message: "Invalid user id" });
+        try { return response.status(200).json({ success: true, relationship: await this.friendsService.relationship(request.userId!, id) }); }
+        catch (error) { const status = error instanceof Error && error.message === "USER_NOT_FOUND" ? 404 : 400; return response.status(status).json({ success: false, message: error instanceof Error ? error.message : "Invalid relationship" }); }
+    }
+
+    @Post("follow/:userId")
+    async follow(@Req() request: AuthenticatedRequest, @Param("userId") rawId: string, @Res() response: Response): Promise<Response> {
+        return this.updateFollow(request, rawId, true, response);
+    }
+
+    @Delete("follow/:userId")
+    async unfollow(@Req() request: AuthenticatedRequest, @Param("userId") rawId: string, @Res() response: Response): Promise<Response> {
+        return this.updateFollow(request, rawId, false, response);
+    }
+
+    private async updateFollow(request: AuthenticatedRequest, rawId: string, follow: boolean, response: Response): Promise<Response> {
+        const id = parseId(rawId);
+        if (!id) return response.status(400).json({ success: false, message: "Invalid user id" });
+        try { return response.status(200).json({ success: true, relationship: await this.friendsService.toggleFollow(request.userId!, id, follow) }); }
+        catch (error) { const code = error instanceof Error ? error.message : "Internal server error"; return response.status(code === "USER_NOT_FOUND" ? 404 : code === "CANNOT_FOLLOW_YOURSELF" ? 400 : 500).json({ success: false, message: code }); }
+    }
 
     @Get("search")
     async searchUsers(
@@ -68,7 +106,8 @@ export class FriendsController {
         try {
             const { addresseeId } = body;
 
-            if (!addresseeId) {
+            const parsedAddresseeId = parseId(addresseeId);
+            if (!parsedAddresseeId) {
                 return response.status(400).json({
                     success: false,
                     message: "addresseeId is required",
@@ -77,7 +116,7 @@ export class FriendsController {
 
             const friendship = await this.friendsService.sendFriendRequest(
                 request.userId!,
-                BigInt(addresseeId),
+                parsedAddresseeId,
             );
 
             return response.status(201).json({
@@ -91,6 +130,10 @@ export class FriendsController {
                 },
             });
         } catch (error) {
+            console.error("Send friend request failed:", error);
+            if (typeof error === "object" && error !== null && "code" in error && (error.code === "P2021" || error.code === "P2022")) {
+                return response.status(503).json({ success: false, message: "Cơ sở dữ liệu quan hệ chưa được cập nhật. Hãy áp dụng migration quan hệ mới." });
+            }
             if (error instanceof Error) {
                 const errorResponses: Record<string, { status: number; message: string }> = {
                     CANNOT_ADD_YOURSELF: {
@@ -105,6 +148,7 @@ export class FriendsController {
                         status: 409,
                         message: "Friend request already exists",
                     },
+                    INCOMING_REQUEST_EXISTS: { status: 409, message: "You already have a pending request from this user" },
                     ALREADY_FRIENDS: {
                         status: 409,
                         message: "You are already friends",
@@ -124,6 +168,7 @@ export class FriendsController {
                 }
             }
 
+            if (typeof error === "object" && error !== null && "code" in error && error.code === "P2002") return response.status(409).json({ success: false, message: "Friend request already exists" });
             return response.status(500).json({
                 success: false,
                 message: "Internal server error",
@@ -205,7 +250,8 @@ export class FriendsController {
         @Param("id") id: string,
         @Res() response: Response,
     ): Promise<Response> {
-        if (!id) {
+        const requestId = parseId(id);
+        if (!requestId) {
             return response.status(400).json({
                 success: false,
                 message: "Request id is required",
@@ -214,7 +260,7 @@ export class FriendsController {
 
         try {
             const friendship = await this.friendsService.acceptFriendRequest(
-                BigInt(id),
+                requestId,
                 request.userId!,
             );
 
@@ -249,7 +295,8 @@ export class FriendsController {
         @Param("id") id: string,
         @Res() response: Response,
     ): Promise<Response> {
-        if (!id) {
+        const requestId = parseId(id);
+        if (!requestId) {
             return response.status(400).json({
                 success: false,
                 message: "Request id is required",
@@ -258,7 +305,7 @@ export class FriendsController {
 
         try {
             const friendship = await this.friendsService.rejectFriendRequest(
-                BigInt(id),
+                requestId,
                 request.userId!,
             );
 
@@ -287,6 +334,14 @@ export class FriendsController {
         }
     }
 
+    @Delete("requests/:id")
+    async cancelFriendRequest(@Req() request: AuthenticatedRequest, @Param("id") rawId: string, @Res() response: Response): Promise<Response> {
+        const requestId = parseId(rawId);
+        if (!requestId) return response.status(400).json({ success: false, message: "Invalid request id" });
+        try { await this.friendsService.cancelFriendRequest(requestId, request.userId!); return response.status(200).json({ success: true }); }
+        catch (error) { if (error instanceof Error && error.message === "REQUEST_NOT_FOUND") return response.status(404).json({ success: false, message: "Friend request not found" }); return response.status(500).json({ success: false, message: "Internal server error" }); }
+    }
+
     @Get()
     async getFriends(
         @Req() request: AuthenticatedRequest,
@@ -313,7 +368,8 @@ export class FriendsController {
         @Param("friendId") friendIdParam: string,
         @Res() response: Response,
     ): Promise<Response> {
-        if (!friendIdParam) {
+        const friendId = parseId(friendIdParam);
+        if (!friendId) {
             return response.status(400).json({
                 success: false,
                 message: "Friend id is required",
@@ -323,7 +379,7 @@ export class FriendsController {
         try {
             await this.friendsService.removeFriend(
                 request.userId!,
-                BigInt(friendIdParam),
+                friendId,
             );
 
             return response.status(200).json({
@@ -351,7 +407,8 @@ export class FriendsController {
         @Param("userId") userIdParam: string,
         @Res() response: Response,
     ): Promise<Response> {
-        if (!userIdParam) {
+        const userId = parseId(userIdParam);
+        if (!userId) {
             return response.status(400).json({
                 success: false,
                 message: "User id is required",
@@ -361,7 +418,7 @@ export class FriendsController {
         try {
             const friendship = await this.friendsService.blockUser(
                 request.userId!,
-                BigInt(userIdParam),
+                userId,
             );
 
             return response.status(200).json({

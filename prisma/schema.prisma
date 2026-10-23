@@ -74,12 +74,27 @@ model friendships {
   status                                friendships_status @default(pending)
   created_at                            DateTime           @default(now()) @db.DateTime(0)
   updated_at                            DateTime           @default(now()) @db.DateTime(0)
+  user_high_id                          BigInt             @db.UnsignedBigInt
+  user_low_id                           BigInt             @db.UnsignedBigInt
   users_friendships_addressee_idTousers users              @relation("friendships_addressee_idTousers", fields: [addressee_id], references: [id], onDelete: Cascade, map: "fk_friendships_addressee")
   users_friendships_requester_idTousers users              @relation("friendships_requester_idTousers", fields: [requester_id], references: [id], onDelete: Cascade, map: "fk_friendships_requester")
 
   @@unique([requester_id, addressee_id], map: "uq_friendship")
+  @@unique([user_low_id, user_high_id], map: "uq_friendship_pair")
   @@index([addressee_id], map: "idx_friendships_addressee")
   @@index([requester_id], map: "idx_friendships_requester")
+}
+
+model follows {
+  id           BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  follower_id  BigInt   @db.UnsignedBigInt
+  following_id BigInt   @db.UnsignedBigInt
+  created_at   DateTime @default(now()) @db.DateTime(0)
+  follower     users    @relation("follows_follower", fields: [follower_id], references: [id], onDelete: Cascade)
+  following    users    @relation("follows_following", fields: [following_id], references: [id], onDelete: Cascade)
+
+  @@unique([follower_id, following_id], map: "uq_follow")
+  @@index([following_id], map: "idx_follows_following")
 }
 
 model refresh_tokens {
@@ -137,11 +152,13 @@ model notifications {
   reference_id                        BigInt?            @db.UnsignedBigInt
   is_read                             Boolean            @default(false)
   created_at                          DateTime           @default(now()) @db.DateTime(0)
+  read_at                             DateTime?          @db.DateTime(0)
   users_notifications_actor_idTousers users?             @relation("notifications_actor_idTousers", fields: [actor_id], references: [id], map: "fk_notifications_actor")
   users_notifications_user_idTousers  users              @relation("notifications_user_idTousers", fields: [user_id], references: [id], onDelete: Cascade, map: "fk_notifications_user")
 
   @@index([actor_id], map: "fk_notifications_actor")
   @@index([is_read], map: "idx_notifications_is_read")
+  @@index([is_read, read_at], map: "idx_notifications_read_at")
   @@index([user_id], map: "idx_notifications_user")
 }
 
@@ -241,6 +258,8 @@ model users {
   comments                                    comments[]
   conversation_members                        conversation_members[]
   conversations                               conversations[]
+  follows_as_follower                         follows[]                   @relation("follows_follower")
+  follows_as_following                        follows[]                   @relation("follows_following")
   friendships_friendships_addressee_idTousers friendships[]               @relation("friendships_addressee_idTousers")
   friendships_friendships_requester_idTousers friendships[]               @relation("friendships_requester_idTousers")
   message_reads                               message_reads[]
@@ -293,6 +312,7 @@ enum notifications_type {
   post_reaction
   comment
   comment_reaction
+  new_post
 }
 
 enum conversation_members_role {

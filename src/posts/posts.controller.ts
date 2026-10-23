@@ -32,11 +32,12 @@ export class PostsController {
     }
     @Post(":id/comments")
     comment(@Req() request: AuthenticatedRequest, @Param("id") id: string, @Body() body: unknown) {
-        return this.posts.mutateComment(request.userId!, parseId(id), parseComment(body));
+        const comment = parseComment(body);
+        return this.posts.mutateComment(request.userId!, parseId(id), comment.content, undefined, comment.parentCommentId);
     }
     @Patch(":id/comments/:commentId")
     editComment(@Req() request: AuthenticatedRequest, @Param("id") id: string, @Param("commentId") commentId: string, @Body() body: unknown) {
-        return this.posts.mutateComment(request.userId!, parseId(id), parseComment(body), parseId(commentId));
+        return this.posts.mutateComment(request.userId!, parseId(id), parseComment(body).content, parseId(commentId));
     }
     @Delete(":id/comments/:commentId")
     deleteComment(@Req() request: AuthenticatedRequest, @Param("id") id: string, @Param("commentId") commentId: string) {

@@ -38,4 +38,20 @@ export class ProfileImagesService {
         if (result.previous && result.previous !== uploaded.key) await this.storage.remove([result.previous]);
         return { success: true, kind, url: await this.storage.url(uploaded.key, uploaded.type) };
     }
+
+    async remove(userId: bigint, kind: string) {
+        if (kind !== "avatar") throw new BadRequestException("Chá»‰ cÃ³ thá»ƒ xÃ³a áº£nh Ä‘áº¡i diá»‡n báº±ng thao tÃ¡c nÃ y.");
+        const result = await this.prisma.$transaction(async tx => {
+            const user = await tx.users.findFirst({ where: { id: userId, deleted: "NO" } });
+            if (!user) throw new NotFoundException("TÃ i khoáº£n khÃ´ng tá»“n táº¡i.");
+            const profile = await tx.profiles.findUnique({ where: { user_id: userId } });
+            await tx.profiles.updateMany({ where: { user_id: userId }, data: { avatar_url: null, updated_at: new Date() } });
+            const updatedUser = await tx.users.update({ where: { id: userId }, data: { avatar: null } });
+            return { previous: [profile?.avatar_url, user.avatar].filter((value): value is string => !!value), updatedUser };
+        }, { timeout: 15000 });
+
+        await this.users.syncProfileImage(result.updatedUser);
+        await this.storage.remove([...new Set(result.previous)]);
+        return { success: true, kind, url: null };
+    }
 }

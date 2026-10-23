@@ -42,11 +42,12 @@ export function safeFilename(name: string): string {
     return basename(name.replace(/\\/g, "/")).replace(/[\x00-\x1f\x7f]/g, "").slice(0, 255) || "media";
 }
 
-export function parseComment(raw: unknown): string {
+export function parseComment(raw: unknown): { content: string; parentCommentId?: bigint } {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new BadRequestException("Bình luận không hợp lệ.");
     const body = raw as Record<string, unknown>;
-    if (Object.keys(body).some(key => key !== "content") || typeof body.content !== "string" || !body.content.trim() || body.content.length > 2000) throw new BadRequestException("Bình luận cần từ 1 đến 2.000 ký tự. Chưa hỗ trợ trả lời bình luận.");
-    return body.content.trim();
+    if (Object.keys(body).some(key => key !== "content" && key !== "parentCommentId") || typeof body.content !== "string" || !body.content.trim() || body.content.length > 2000) throw new BadRequestException("Bình luận cần từ 1 đến 2.000 ký tự.");
+    if (body.parentCommentId !== undefined && typeof body.parentCommentId !== "string") throw new BadRequestException("ID bình luận trả lời không hợp lệ.");
+    return { content: body.content.trim(), ...(body.parentCommentId !== undefined ? { parentCommentId: parseId(body.parentCommentId) } : {}) };
 }
 export function parseRepost(raw: unknown) {
     const body = (raw ?? {}) as Record<string, unknown>;
