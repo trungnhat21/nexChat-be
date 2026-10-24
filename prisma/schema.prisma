@@ -60,11 +60,17 @@ model conversations {
   created_by           BigInt?                @db.UnsignedBigInt
   created_at           DateTime               @default(now()) @db.DateTime(0)
   updated_at           DateTime               @default(now()) @db.DateTime(0)
+  direct_user_high_id  BigInt?                @db.UnsignedBigInt
+  direct_user_low_id   BigInt?                @db.UnsignedBigInt
   conversation_members conversation_members[]
   users                users?                 @relation(fields: [created_by], references: [id], map: "fk_conversations_creator")
+  direct_user_high     users?                 @relation("direct_conversations_high", fields: [direct_user_high_id], references: [id], map: "fk_conversations_direct_high")
+  direct_user_low      users?                 @relation("direct_conversations_low", fields: [direct_user_low_id], references: [id], map: "fk_conversations_direct_low")
   messages             messages[]
 
+  @@unique([direct_user_low_id, direct_user_high_id], map: "uq_conversation_direct_pair")
   @@index([created_by], map: "fk_conversations_creator")
+  @@index([direct_user_high_id], map: "fk_conversations_direct_high")
 }
 
 model friendships {
@@ -132,14 +138,18 @@ model messages {
   created_at          DateTime              @default(now()) @db.DateTime(0)
   updated_at          DateTime              @default(now()) @db.DateTime(0)
   deleted_at          DateTime?             @db.DateTime(0)
+  client_message_id   String?               @db.VarChar(64)
+  delivered_at        DateTime?             @db.DateTime(0)
   message_reads       message_reads[]
   conversations       conversations         @relation(fields: [conversation_id], references: [id], onDelete: Cascade, map: "fk_messages_conversation")
   messages            messages?             @relation("messagesTomessages", fields: [reply_to_message_id], references: [id], map: "fk_messages_reply")
   other_messages      messages[]            @relation("messagesTomessages")
   users               users?                @relation(fields: [sender_id], references: [id], map: "fk_messages_sender")
 
+  @@unique([conversation_id, sender_id, client_message_id], map: "uq_messages_conversation_sender_client_id")
   @@index([reply_to_message_id], map: "fk_messages_reply")
   @@index([conversation_id], map: "idx_messages_conversation")
+  @@index([conversation_id, id], map: "idx_messages_conversation_id")
   @@index([created_at], map: "idx_messages_created_at")
   @@index([sender_id], map: "idx_messages_sender")
 }
@@ -258,6 +268,8 @@ model users {
   comments                                    comments[]
   conversation_members                        conversation_members[]
   conversations                               conversations[]
+  direct_conversations_high                   conversations[]             @relation("direct_conversations_high")
+  direct_conversations_low                    conversations[]             @relation("direct_conversations_low")
   follows_as_follower                         follows[]                   @relation("follows_follower")
   follows_as_following                        follows[]                   @relation("follows_following")
   friendships_friendships_addressee_idTousers friendships[]               @relation("friendships_addressee_idTousers")

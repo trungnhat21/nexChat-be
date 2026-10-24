@@ -9,6 +9,7 @@ import { NotificationsModule } from "./notifications/notifications.module.js";
 import { PrismaModule } from "./prisma/prisma.module.js";
 import { UsersModule } from "./users/users.module.js";
 import { RedisModule } from "./redis/redis.module.js";
+import { MessagingModule } from "./messaging/messaging.module.js";
 
 @Module({
     imports: [
@@ -23,7 +24,8 @@ import { RedisModule } from "./redis/redis.module.js";
         NotificationsModule,
         PostsModule,
         ProfileModule,
-        RedisModule
+        RedisModule,
+        MessagingModule,
     ],
 })
 export class AppModule {}

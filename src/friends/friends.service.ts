@@ -220,6 +220,7 @@ export class FriendsService {
             return friendship;
         });
         this.notifications.emitCreated(friendship.requester_id);
+        this.notifications.notifyFriendshipAccepted(friendship.requester_id, friendship.addressee_id);
         return friendship;
     }
 
@@ -320,23 +321,20 @@ export class FriendsService {
             },
         });
 
-        return friendships.map((item) => {
-            if (item.requester_id === currentUserId) {
-                const friend = item.users_friendships_addressee_idTousers;
-                return {
-                    friendshipId: item.id.toString(),
-                    ...friend,
-                    id: friend.id.toString(),
-                };
-            }
-
-            const friend = item.users_friendships_requester_idTousers;
+        return Promise.all(friendships.map(async (item) => {
+            const friend = item.requester_id === currentUserId
+                ? item.users_friendships_addressee_idTousers
+                : item.users_friendships_requester_idTousers;
+            const avatar = friend.avatar?.startsWith("profiles/")
+                ? await this.storage.url(friend.avatar, null)
+                : friend.avatar;
             return {
                 friendshipId: item.id.toString(),
                 ...friend,
+                avatar,
                 id: friend.id.toString(),
             };
-        });
+        }));
     }
 
     async removeFriend(currentUserId: bigint, friendId: bigint) {

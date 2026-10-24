@@ -62,6 +62,10 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
         this.gateway.notifyUser(userId);
     }
 
+    notifyFriendshipAccepted(userA: bigint, userB: bigint) {
+        this.gateway.notifyFriendshipAccepted(userA, userB);
+    }
+
     getNotifications(userId: bigint) {
         return this.prisma.notifications.findMany({
             where: { user_id: userId, OR: [{ is_read: false }, { is_read: true, read_at: { gt: this.readCutoff() } }] },
