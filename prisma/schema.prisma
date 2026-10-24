@@ -103,6 +103,53 @@ model follows {
   @@index([following_id], map: "idx_follows_following")
 }
 
+model stories {
+  id              BigInt            @id @default(autoincrement()) @db.UnsignedBigInt
+  owner_id        BigInt            @db.UnsignedBigInt
+  media_key       String            @db.VarChar(1000)
+  media_type      String            @db.VarChar(100)
+  file_name       String            @db.VarChar(255)
+  file_size       BigInt            @db.UnsignedBigInt
+  caption         String?           @db.VarChar(500)
+  visibility      story_visibility  @default(friends)
+  created_at      DateTime          @default(now())
+  expires_at      DateTime
+  deleted_at      DateTime?         @db.DateTime(0)
+  users           users             @relation(fields: [owner_id], references: [id], onDelete: Cascade, map: "fk_stories_owner")
+  story_reactions story_reactions[]
+  story_views     story_views[]
+
+  @@index([owner_id, id], map: "idx_stories_owner_id")
+  @@index([expires_at, id], map: "idx_stories_expiration")
+  @@index([visibility, expires_at, id], map: "idx_stories_active_visibility")
+}
+
+model story_views {
+  id        BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  story_id  BigInt   @db.UnsignedBigInt
+  viewer_id BigInt   @db.UnsignedBigInt
+  viewed_at DateTime @default(now())
+  stories   stories  @relation(fields: [story_id], references: [id], onDelete: Cascade, map: "fk_story_views_story")
+  users     users    @relation(fields: [viewer_id], references: [id], onDelete: Cascade, map: "fk_story_views_viewer")
+
+  @@unique([story_id, viewer_id], map: "uq_story_view")
+  @@index([viewer_id, viewed_at], map: "idx_story_views_viewer")
+}
+
+model story_reactions {
+  id         BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  story_id   BigInt   @db.UnsignedBigInt
+  user_id    BigInt   @db.UnsignedBigInt
+  reaction   String   @db.VarChar(16)
+  created_at DateTime @default(now()) @db.DateTime(0)
+  stories    stories  @relation(fields: [story_id], references: [id], onDelete: Cascade, map: "fk_story_reactions_story")
+  users      users    @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_story_reactions_user")
+
+  @@unique([story_id, user_id], map: "uq_story_reaction")
+  @@index([story_id, reaction], map: "idx_story_reactions_story")
+  @@index([user_id], map: "fk_story_reactions_user")
+}
+
 model refresh_tokens {
   id         BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
   user_id    BigInt    @db.UnsignedBigInt
@@ -283,6 +330,9 @@ model users {
   reactions                                   reactions[]
   refresh_tokens                              refresh_tokens[]
   saved_posts                                 saved_posts[]
+  stories                                     stories[]
+  story_reactions                             story_reactions[]
+  story_views                                 story_views[]
   two_factor_recovery_codes                   two_factor_recovery_codes[]
   user_two_factor_auth                        user_two_factor_auth?
 }
@@ -314,6 +364,13 @@ enum reactions_target_type {
 enum posts_privacy {
   public
   friends
+  private
+}
+
+enum story_visibility {
+  public
+  friends
+  followers
   private
 }
 

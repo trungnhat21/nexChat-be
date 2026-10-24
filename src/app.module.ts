@@ -10,6 +10,7 @@ import { PrismaModule } from "./prisma/prisma.module.js";
 import { UsersModule } from "./users/users.module.js";
 import { RedisModule } from "./redis/redis.module.js";
 import { MessagingModule } from "./messaging/messaging.module.js";
+import { StoriesModule } from "./stories/stories.module.js";
 
 @Module({
     imports: [
@@ -26,6 +27,7 @@ import { MessagingModule } from "./messaging/messaging.module.js";
         ProfileModule,
         RedisModule,
         MessagingModule,
+        StoriesModule,
     ],
 })
 export class AppModule {}
