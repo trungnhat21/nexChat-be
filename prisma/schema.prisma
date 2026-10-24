@@ -60,11 +60,17 @@ model conversations {
   created_by           BigInt?                @db.UnsignedBigInt
   created_at           DateTime               @default(now()) @db.DateTime(0)
   updated_at           DateTime               @default(now()) @db.DateTime(0)
+  direct_user_high_id  BigInt?                @db.UnsignedBigInt
+  direct_user_low_id   BigInt?                @db.UnsignedBigInt
   conversation_members conversation_members[]
   users                users?                 @relation(fields: [created_by], references: [id], map: "fk_conversations_creator")
+  direct_user_high     users?                 @relation("direct_conversations_high", fields: [direct_user_high_id], references: [id], map: "fk_conversations_direct_high")
+  direct_user_low      users?                 @relation("direct_conversations_low", fields: [direct_user_low_id], references: [id], map: "fk_conversations_direct_low")
   messages             messages[]
 
+  @@unique([direct_user_low_id, direct_user_high_id], map: "uq_conversation_direct_pair")
   @@index([created_by], map: "fk_conversations_creator")
+  @@index([direct_user_high_id], map: "fk_conversations_direct_high")
 }
 
 model friendships {
@@ -74,12 +80,74 @@ model friendships {
   status                                friendships_status @default(pending)
   created_at                            DateTime           @default(now()) @db.DateTime(0)
   updated_at                            DateTime           @default(now()) @db.DateTime(0)
+  user_high_id                          BigInt             @db.UnsignedBigInt
+  user_low_id                           BigInt             @db.UnsignedBigInt
   users_friendships_addressee_idTousers users              @relation("friendships_addressee_idTousers", fields: [addressee_id], references: [id], onDelete: Cascade, map: "fk_friendships_addressee")
   users_friendships_requester_idTousers users              @relation("friendships_requester_idTousers", fields: [requester_id], references: [id], onDelete: Cascade, map: "fk_friendships_requester")
 
   @@unique([requester_id, addressee_id], map: "uq_friendship")
+  @@unique([user_low_id, user_high_id], map: "uq_friendship_pair")
   @@index([addressee_id], map: "idx_friendships_addressee")
   @@index([requester_id], map: "idx_friendships_requester")
+}
+
+model follows {
+  id           BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  follower_id  BigInt   @db.UnsignedBigInt
+  following_id BigInt   @db.UnsignedBigInt
+  created_at   DateTime @default(now()) @db.DateTime(0)
+  follower     users    @relation("follows_follower", fields: [follower_id], references: [id], onDelete: Cascade)
+  following    users    @relation("follows_following", fields: [following_id], references: [id], onDelete: Cascade)
+
+  @@unique([follower_id, following_id], map: "uq_follow")
+  @@index([following_id], map: "idx_follows_following")
+}
+
+model stories {
+  id              BigInt            @id @default(autoincrement()) @db.UnsignedBigInt
+  owner_id        BigInt            @db.UnsignedBigInt
+  media_key       String            @db.VarChar(1000)
+  media_type      String            @db.VarChar(100)
+  file_name       String            @db.VarChar(255)
+  file_size       BigInt            @db.UnsignedBigInt
+  caption         String?           @db.VarChar(500)
+  visibility      story_visibility  @default(friends)
+  created_at      DateTime          @default(now())
+  expires_at      DateTime
+  deleted_at      DateTime?         @db.DateTime(0)
+  users           users             @relation(fields: [owner_id], references: [id], onDelete: Cascade, map: "fk_stories_owner")
+  story_reactions story_reactions[]
+  story_views     story_views[]
+
+  @@index([owner_id, id], map: "idx_stories_owner_id")
+  @@index([expires_at, id], map: "idx_stories_expiration")
+  @@index([visibility, expires_at, id], map: "idx_stories_active_visibility")
+}
+
+model story_views {
+  id        BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  story_id  BigInt   @db.UnsignedBigInt
+  viewer_id BigInt   @db.UnsignedBigInt
+  viewed_at DateTime @default(now())
+  stories   stories  @relation(fields: [story_id], references: [id], onDelete: Cascade, map: "fk_story_views_story")
+  users     users    @relation(fields: [viewer_id], references: [id], onDelete: Cascade, map: "fk_story_views_viewer")
+
+  @@unique([story_id, viewer_id], map: "uq_story_view")
+  @@index([viewer_id, viewed_at], map: "idx_story_views_viewer")
+}
+
+model story_reactions {
+  id         BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  story_id   BigInt   @db.UnsignedBigInt
+  user_id    BigInt   @db.UnsignedBigInt
+  reaction   String   @db.VarChar(16)
+  created_at DateTime @default(now()) @db.DateTime(0)
+  stories    stories  @relation(fields: [story_id], references: [id], onDelete: Cascade, map: "fk_story_reactions_story")
+  users      users    @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_story_reactions_user")
+
+  @@unique([story_id, user_id], map: "uq_story_reaction")
+  @@index([story_id, reaction], map: "idx_story_reactions_story")
+  @@index([user_id], map: "fk_story_reactions_user")
 }
 
 model refresh_tokens {
@@ -117,14 +185,18 @@ model messages {
   created_at          DateTime              @default(now()) @db.DateTime(0)
   updated_at          DateTime              @default(now()) @db.DateTime(0)
   deleted_at          DateTime?             @db.DateTime(0)
+  client_message_id   String?               @db.VarChar(64)
+  delivered_at        DateTime?             @db.DateTime(0)
   message_reads       message_reads[]
   conversations       conversations         @relation(fields: [conversation_id], references: [id], onDelete: Cascade, map: "fk_messages_conversation")
   messages            messages?             @relation("messagesTomessages", fields: [reply_to_message_id], references: [id], map: "fk_messages_reply")
   other_messages      messages[]            @relation("messagesTomessages")
   users               users?                @relation(fields: [sender_id], references: [id], map: "fk_messages_sender")
 
+  @@unique([conversation_id, sender_id, client_message_id], map: "uq_messages_conversation_sender_client_id")
   @@index([reply_to_message_id], map: "fk_messages_reply")
   @@index([conversation_id], map: "idx_messages_conversation")
+  @@index([conversation_id, id], map: "idx_messages_conversation_id")
   @@index([created_at], map: "idx_messages_created_at")
   @@index([sender_id], map: "idx_messages_sender")
 }
@@ -137,27 +209,46 @@ model notifications {
   reference_id                        BigInt?            @db.UnsignedBigInt
   is_read                             Boolean            @default(false)
   created_at                          DateTime           @default(now()) @db.DateTime(0)
+  read_at                             DateTime?          @db.DateTime(0)
   users_notifications_actor_idTousers users?             @relation("notifications_actor_idTousers", fields: [actor_id], references: [id], map: "fk_notifications_actor")
   users_notifications_user_idTousers  users              @relation("notifications_user_idTousers", fields: [user_id], references: [id], onDelete: Cascade, map: "fk_notifications_user")
 
   @@index([actor_id], map: "fk_notifications_actor")
   @@index([is_read], map: "idx_notifications_is_read")
+  @@index([is_read, read_at], map: "idx_notifications_read_at")
   @@index([user_id], map: "idx_notifications_user")
 }
 
 model posts {
-  id         BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
-  user_id    BigInt        @db.UnsignedBigInt
-  content    String?       @db.Text
-  privacy    posts_privacy @default(public)
-  created_at DateTime      @default(now()) @db.DateTime(0)
-  updated_at DateTime      @default(now()) @db.DateTime(0)
-  deleted_at DateTime?     @db.DateTime(0)
-  comments   comments[]
-  users      users         @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_posts_user")
+  id             BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
+  user_id        BigInt        @db.UnsignedBigInt
+  content        String?       @db.Text
+  privacy        posts_privacy @default(public)
+  created_at     DateTime      @default(now()) @db.DateTime(0)
+  updated_at     DateTime      @default(now()) @db.DateTime(0)
+  deleted_at     DateTime?     @db.DateTime(0)
+  shared_post_id BigInt?       @db.UnsignedBigInt
+  is_repost      Boolean       @default(false)
+  comments       comments[]
+  original       posts?        @relation("PostReposts", fields: [shared_post_id], references: [id], onUpdate: NoAction, map: "fk_posts_original")
+  reposts        posts[]       @relation("PostReposts")
+  users          users         @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_posts_user")
+  saved_posts    saved_posts[]
 
+  @@index([shared_post_id], map: "idx_posts_original")
   @@index([created_at], map: "idx_posts_created_at")
   @@index([user_id], map: "idx_posts_user")
+}
+
+model saved_posts {
+  user_id    BigInt   @db.UnsignedBigInt
+  post_id    BigInt   @db.UnsignedBigInt
+  created_at DateTime @default(now()) @db.DateTime(0)
+  posts      posts    @relation(fields: [post_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_saved_posts_post")
+  users      users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_saved_posts_user")
+
+  @@id([user_id, post_id])
+  @@index([post_id], map: "idx_saved_posts_post")
 }
 
 model profiles {
@@ -169,6 +260,7 @@ model profiles {
   birthday     DateTime? @db.Date
   created_at   DateTime  @default(now()) @db.DateTime(0)
   updated_at   DateTime  @default(now()) @db.DateTime(0)
+  cover_url    String?   @db.VarChar(500)
   users        users     @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_profiles_user")
 }
 
@@ -223,6 +315,10 @@ model users {
   comments                                    comments[]
   conversation_members                        conversation_members[]
   conversations                               conversations[]
+  direct_conversations_high                   conversations[]             @relation("direct_conversations_high")
+  direct_conversations_low                    conversations[]             @relation("direct_conversations_low")
+  follows_as_follower                         follows[]                   @relation("follows_follower")
+  follows_as_following                        follows[]                   @relation("follows_following")
   friendships_friendships_addressee_idTousers friendships[]               @relation("friendships_addressee_idTousers")
   friendships_friendships_requester_idTousers friendships[]               @relation("friendships_requester_idTousers")
   message_reads                               message_reads[]
@@ -233,6 +329,10 @@ model users {
   profiles                                    profiles?
   reactions                                   reactions[]
   refresh_tokens                              refresh_tokens[]
+  saved_posts                                 saved_posts[]
+  stories                                     stories[]
+  story_reactions                             story_reactions[]
+  story_views                                 story_views[]
   two_factor_recovery_codes                   two_factor_recovery_codes[]
   user_two_factor_auth                        user_two_factor_auth?
 }
@@ -267,6 +367,13 @@ enum posts_privacy {
   private
 }
 
+enum story_visibility {
+  public
+  friends
+  followers
+  private
+}
+
 enum notifications_type {
   friend_request
   friend_accept
@@ -274,6 +381,7 @@ enum notifications_type {
   post_reaction
   comment
   comment_reaction
+  new_post
 }
 
 enum conversation_members_role {

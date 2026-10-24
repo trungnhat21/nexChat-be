@@ -138,6 +138,7 @@ export class AuthController {
         }
     }
 
+    @Public()
     @Post("refresh")
     async refresh(
         @Req() request: Request,
@@ -195,7 +196,7 @@ export class AuthController {
     ): Promise<Response> {
         return response.status(200).json({
             success: true,
-            currentUser: request.currentUser,
+            currentUser: await this.authService.getCurrentUser(request.userId!),
         });
     }
 
@@ -311,6 +312,7 @@ export class AuthController {
         }
     }
 
+    @Public()
     @Post("logout")
     async logout(
         @Req() request: Request,

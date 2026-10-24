@@ -13,6 +13,12 @@ import { AuthGuard } from "../auth/auth.guard.js";
 import type { AuthenticatedRequest } from "../auth/auth.types.js";
 import { NotificationsService } from "./notifications.service.js";
 
+function parseNotificationId(value: string): bigint | null {
+    if (!/^[1-9]\d{0,19}$/.test(value)) return null;
+    const id = BigInt(value);
+    return id <= 18446744073709551615n ? id : null;
+}
+
 @Controller("api/notifications")
 @UseGuards(AuthGuard)
 export class NotificationsController {
@@ -24,9 +30,10 @@ export class NotificationsController {
         @Res() response: Response,
     ): Promise<Response> {
         try {
-            const notifications = await this.notificationsService.getNotifications(
-                request.userId!,
-            );
+            const [notifications, unreadCount] = await Promise.all([
+                this.notificationsService.getNotifications(request.userId!),
+                this.notificationsService.getUnreadCount(request.userId!),
+            ]);
             const data = notifications.map((notification) => {
                 const actor = notification.users_notifications_actor_idTousers;
                 return {
@@ -47,6 +54,7 @@ export class NotificationsController {
             return response.status(200).json({
                 success: true,
                 notifications: data,
+                unreadCount,
             });
         } catch {
             return response.status(500).json({
@@ -103,7 +111,8 @@ export class NotificationsController {
         @Param("id") id: string,
         @Res() response: Response,
     ): Promise<Response> {
-        if (!id) {
+        const notificationId = parseNotificationId(id);
+        if (notificationId === null) {
             return response.status(400).json({
                 success: false,
                 message: "Notification id is required",
@@ -112,7 +121,7 @@ export class NotificationsController {
 
         try {
             const notification = await this.notificationsService.markAsRead(
-                BigInt(id),
+                notificationId,
                 request.userId!,
             );
 
@@ -145,7 +154,8 @@ export class NotificationsController {
         @Param("id") id: string,
         @Res() response: Response,
     ): Promise<Response> {
-        if (!id) {
+        const notificationId = parseNotificationId(id);
+        if (notificationId === null) {
             return response.status(400).json({
                 success: false,
                 message: "Notification id is required",
@@ -154,7 +164,7 @@ export class NotificationsController {
 
         try {
             await this.notificationsService.deleteNotification(
-                BigInt(id),
+                notificationId,
                 request.userId!,
             );
 

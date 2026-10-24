@@ -1,3 +1,4 @@
+import { PostStorageService } from "../posts/post-storage.service.js";
 import { Injectable } from "@nestjs/common";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
@@ -53,6 +54,7 @@ export class AuthService {
         private readonly prisma: PrismaService,
         private readonly redis: RedisService,
         private readonly usersService: UsersService,
+        private readonly storage: PostStorageService,
     ) {}
 
     hashPassword(password: string) {
@@ -205,7 +207,7 @@ export class AuthService {
             throw new AuthFlowError("USER_NOT_FOUND");
         }
 
-        const currentUser = this.toCurrentUser(user);
+        const currentUser = await this.toCurrentUser(user);
         await this.saveSession(payload.sessionId, currentUser);
 
         return {
@@ -356,7 +358,7 @@ export class AuthService {
 
     private async createSession(user: CurrentUserSource) {
         const sessionId = crypto.randomUUID();
-        const currentUser = this.toCurrentUser(user);
+        const currentUser = await this.toCurrentUser(user);
         const accessToken = createAccessToken(user.id, sessionId);
         const refreshToken = createRefreshToken(user.id, sessionId);
 
@@ -386,7 +388,7 @@ export class AuthService {
         return `${SESSION_KEY_PREFIX}${sessionId}`;
     }
 
-    private toCurrentUser(user: CurrentUserSource): CurrentUser {
+    private async toCurrentUser(user: CurrentUserSource): Promise<CurrentUser> {
         return {
             id: user.id.toString(),
             email: user.email,
@@ -394,7 +396,7 @@ export class AuthService {
             userName: user.user_name,
             firstName: user.first_name,
             lastName: user.last_name,
-            avatar: user.avatar,
+            avatar: user.avatar?.startsWith("profiles/") ? await this.storage.url(user.avatar, null) : user.avatar,
             createdAt: user.created_at.toISOString(),
             updatedAt: user.updated_at.toISOString(),
         };

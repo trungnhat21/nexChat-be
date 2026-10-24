@@ -234,6 +234,10 @@ export class UsersService {
         return user;
     }
 
+    async syncProfileImage(user: UserGraphSource): Promise<void> {
+        await this.synchronizeGraph("profileImage", user);
+    }
+
     private async observeGraph(
         operation: string,
         action: () => Promise<void>,
