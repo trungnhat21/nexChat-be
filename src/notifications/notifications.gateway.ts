@@ -8,6 +8,8 @@ import { verifyAccessToken } from "../utils/token.js";
 
 const HEARTBEAT_TTL_MS = 75_000;
 const TYPING_TTL_MS = 5_000;
+const CALL_EVENT_DEDUPE_TTL_MS = 10 * 60_000;
+type CallEventAction = "accepted" | "declined" | "cancelled" | "ended";
 
 @WebSocketGateway({ cors: { origin: true, credentials: true } })
 @Injectable()
@@ -16,6 +18,7 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
     private readonly sessions = new Map<string, Map<string, number>>();
     private readonly typing = new Map<string, Map<string, Map<string, number>>>();
     private readonly typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    private readonly emittedCallEvents = new Map<string, number>();
 
     constructor(private readonly auth: AuthService, private readonly prisma: PrismaService) {
     }
@@ -52,6 +55,11 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
                 void this.markRead(client, data, acknowledge).catch(() => acknowledge?.({ success: false, readIds: [] }));
             });
             if (!wasOnline) await this.emitPresence(key, true);
+            // The client can emit `presence:watch` as soon as Socket.IO fires
+            // `connect`, before this asynchronous authentication handler has
+            // registered that listener. Send the initial snapshot from the
+            // authenticated server path so the first presence state cannot be lost.
+            await this.sendPresenceSnapshot(client);
         } catch {
             client.disconnect(true);
         }
@@ -93,6 +101,127 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
 
     notifyMessageStatus(userId: bigint | string, payload: unknown) {
         this.server?.to(this.userRoom(userId)).emit("message:status", payload);
+    }
+
+    async notifyCallStarted(callId: bigint, actorId: bigint): Promise<void> {
+        if (!this.server) return;
+        try {
+            const call = await this.persistedCall(callId);
+            if (!call || call.status !== "ringing" || call.initiated_by !== actorId) return;
+            const caller = call.call_participants.find(item => item.role === "caller");
+            const callee = call.call_participants.find(item => item.role === "callee");
+            if (!caller || !callee || caller.user_id !== actorId || caller.user_id !== call.initiated_by || caller.user_id === callee.user_id) return;
+            const payload = this.callPayload(call, "ringing", "outgoing");
+            this.emitCallOnce(call.id, "call:outgoing", caller.user_id, payload);
+            this.emitCallOnce(call.id, "call:incoming", callee.user_id, payload);
+        } catch { /* Call state is persisted independently; Socket.IO is best-effort. */ }
+    }
+
+    async notifyCallTransition(callId: bigint, actorId: bigint, action: CallEventAction): Promise<void> {
+        if (!this.server) return;
+        try {
+            const call = await this.persistedCall(callId);
+            if (!call) return;
+            const expectedStatus = action;
+            if (call.status !== expectedStatus) return;
+            const caller = call.call_participants.find(item => item.role === "caller");
+            const callee = call.call_participants.find(item => item.role === "callee");
+            if (!caller || !callee || caller.user_id !== call.initiated_by || caller.user_id === callee.user_id) return;
+            const authorizedActor = action === "accepted" || action === "declined"
+                ? callee.user_id === actorId
+                : action === "cancelled"
+                    ? caller.user_id === actorId
+                    : caller.user_id === actorId || callee.user_id === actorId;
+            if (!authorizedActor) return;
+            const eventName = `call:${action}`;
+            const payload = this.callPayload(call, action, action);
+            for (const participant of [caller, callee]) this.emitCallOnce(call.id, eventName, participant.user_id, payload);
+            if (action === "declined" || action === "cancelled" || action === "ended") await this.notifyCallActivity(call, [caller, callee]);
+        } catch { /* Call state is persisted independently; Socket.IO is best-effort. */ }
+    }
+
+    async notifyCallTimedOut(callId: bigint): Promise<void> {
+        if (!this.server) return;
+        try {
+            const call = await this.persistedCall(callId);
+            if (!call || call.status !== "ended" || call.end_reason !== "timeout") return;
+            const caller = call.call_participants.find(item => item.role === "caller");
+            const callee = call.call_participants.find(item => item.role === "callee");
+            if (!caller || !callee || caller.user_id !== call.initiated_by || caller.user_id === callee.user_id) return;
+            const payload = this.callPayload(call, "ended", "ended");
+            for (const participant of [caller, callee]) this.emitCallOnce(call.id, "call:ended", participant.user_id, payload);
+            await this.notifyCallActivity(call, [caller, callee]);
+        } catch { /* The persisted timeout remains authoritative if Socket.IO is unavailable. */ }
+    }
+
+    private async notifyCallActivity(call: NonNullable<Awaited<ReturnType<NotificationsGateway["persistedCall"]>>>, participants: { user_id: bigint; role: string }[]) {
+        const stored = await this.prisma.messages.findFirst({
+            where: { conversation_id: call.conversation_id, sender_id: call.initiated_by, client_message_id: `call-${call.id}-activity`, message_type: "system" },
+            select: { id: true, content: true, created_at: true, client_message_id: true },
+        });
+        if (!stored) return;
+        const payload = {
+            id: stored.id.toString(),
+            conversationId: call.conversation_id.toString(),
+            clientMessageId: stored.client_message_id,
+            content: stored.content ?? "",
+            createdAt: stored.created_at.toISOString(),
+            isMine: false,
+            isRead: false,
+            status: null,
+            sender: null,
+            messageType: "system",
+        };
+        for (const participant of participants) this.emitCallOnce(call.id, "message:new", participant.user_id, payload);
+    }
+
+    private async persistedCall(callId: bigint) {
+        return this.prisma.call_sessions.findUnique({
+            where: { id: callId },
+            select: {
+                id: true,
+                conversation_id: true,
+                initiated_by: true,
+                call_type: true,
+                status: true,
+                created_at: true,
+                accepted_at: true,
+                ended_at: true,
+                end_reason: true,
+                call_participants: { select: { user_id: true, role: true } },
+            },
+        });
+    }
+
+    private callPayload(
+        call: NonNullable<Awaited<ReturnType<NotificationsGateway["persistedCall"]>>>,
+        status: string,
+        eventKey: string,
+    ) {
+        return {
+            eventId: `${call.id}:${eventKey}`,
+            callId: call.id.toString(),
+            conversationId: call.conversation_id.toString(),
+            callerId: call.call_participants.find(item => item.role === "caller")!.user_id.toString(),
+            calleeId: call.call_participants.find(item => item.role === "callee")!.user_id.toString(),
+            callType: call.call_type,
+            status,
+            createdAt: call.created_at.toISOString(),
+            acceptedAt: call.accepted_at?.toISOString() ?? null,
+            endedAt: call.ended_at?.toISOString() ?? null,
+            endReason: call.end_reason,
+        };
+    }
+
+    private emitCallOnce(callId: bigint, eventName: string, userId: bigint, payload: unknown) {
+        const now = Date.now();
+        for (const [key, sentAt] of this.emittedCallEvents) {
+            if (sentAt <= now - CALL_EVENT_DEDUPE_TTL_MS) this.emittedCallEvents.delete(key);
+        }
+        const key = `${callId}:${eventName}:${userId}`;
+        if (this.emittedCallEvents.has(key)) return;
+        this.emittedCallEvents.set(key, now);
+        this.server?.to(this.userRoom(userId)).emit(eventName, payload);
     }
 
     notifyFriendshipAccepted(userA: bigint | string, userB: bigint | string) {

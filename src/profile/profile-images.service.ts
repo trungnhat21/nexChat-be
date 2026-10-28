@@ -40,18 +40,27 @@ export class ProfileImagesService {
     }
 
     async remove(userId: bigint, kind: string) {
-        if (kind !== "avatar") throw new BadRequestException("Chá»‰ cÃ³ thá»ƒ xÃ³a áº£nh Ä‘áº¡i diá»‡n báº±ng thao tÃ¡c nÃ y.");
+        if (kind !== "avatar" && kind !== "cover") throw new BadRequestException("Loại ảnh không hợp lệ.");
         const result = await this.prisma.$transaction(async tx => {
             const user = await tx.users.findFirst({ where: { id: userId, deleted: "NO" } });
-            if (!user) throw new NotFoundException("TÃ i khoáº£n khÃ´ng tá»“n táº¡i.");
+            if (!user) throw new NotFoundException("Tài khoản không tồn tại.");
             const profile = await tx.profiles.findUnique({ where: { user_id: userId } });
-            await tx.profiles.updateMany({ where: { user_id: userId }, data: { avatar_url: null, updated_at: new Date() } });
-            const updatedUser = await tx.users.update({ where: { id: userId }, data: { avatar: null } });
-            return { previous: [profile?.avatar_url, user.avatar].filter((value): value is string => !!value), updatedUser };
+            if (kind === "avatar") {
+                await tx.profiles.updateMany({ where: { user_id: userId }, data: { avatar_url: null, updated_at: new Date() } });
+                const updatedUser = await tx.users.update({ where: { id: userId }, data: { avatar: null } });
+                return { previous: [profile?.avatar_url, user.avatar].filter((value): value is string => !!value), remaining: [], updatedUser };
+            }
+            await tx.profiles.updateMany({ where: { user_id: userId }, data: { cover_url: null, updated_at: new Date() } });
+            return {
+                previous: profile?.cover_url ? [profile.cover_url] : [],
+                remaining: [profile?.avatar_url, user.avatar].filter((value): value is string => !!value),
+                updatedUser: user,
+            };
         }, { timeout: 15000 });
 
-        await this.users.syncProfileImage(result.updatedUser);
-        await this.storage.remove([...new Set(result.previous)]);
+        if (kind === "avatar") await this.users.syncProfileImage(result.updatedUser);
+        const stillReferenced = new Set(result.remaining);
+        await this.storage.remove([...new Set(result.previous)].filter(key => !stillReferenced.has(key)));
         return { success: true, kind, url: null };
     }
 }

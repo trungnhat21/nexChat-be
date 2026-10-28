@@ -52,6 +52,102 @@ model conversation_members {
   @@index([user_id], map: "idx_conversation_members_user")
 }
 
+model call_sessions {
+  id                 BigInt                    @id @default(autoincrement()) @db.UnsignedBigInt
+  conversation_id    BigInt                    @db.UnsignedBigInt
+  initiated_by       BigInt                    @db.UnsignedBigInt
+  room_name          String                    @unique(map: "uq_call_sessions_room") @db.VarChar(128)
+  call_type          call_sessions_type
+  status             call_sessions_status      @default(ringing)
+  idempotency_key    String                    @db.Char(36)
+  created_at         DateTime                  @default(now()) @db.DateTime(0)
+  accepted_at        DateTime?                 @db.DateTime(0)
+  ended_at           DateTime?                 @db.DateTime(0)
+  end_reason         call_sessions_end_reason?
+  updated_at         DateTime                  @default(now()) @db.DateTime(0)
+  call_participants  call_participants[]
+  recording_consents call_recording_consents[]
+  recordings         call_recordings[]
+  conversations      conversations             @relation(fields: [conversation_id], references: [id], onDelete: Cascade, map: "fk_call_sessions_conversation")
+  users              users                     @relation(fields: [initiated_by], references: [id], onDelete: Cascade, map: "fk_call_sessions_initiator")
+
+  @@unique([initiated_by, idempotency_key], map: "uq_call_sessions_idempotency")
+  @@index([conversation_id, status, created_at], map: "idx_call_sessions_conversation_state")
+  @@index([status, created_at], map: "idx_call_sessions_state_created")
+  @@index([initiated_by, created_at], map: "idx_call_sessions_initiator_created")
+}
+
+model call_participants {
+  id        BigInt                @id @default(autoincrement()) @db.UnsignedBigInt
+  call_id   BigInt                @db.UnsignedBigInt
+  user_id   BigInt                @db.UnsignedBigInt
+  role      call_participant_role
+  joined_at DateTime?             @db.DateTime(0)
+  left_at   DateTime?             @db.DateTime(0)
+  calls     call_sessions         @relation(fields: [call_id], references: [id], onDelete: Cascade, map: "fk_call_participants_call")
+  users     users                 @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_call_participants_user")
+
+  @@unique([call_id, user_id], map: "uq_call_participant")
+  @@unique([call_id, role], map: "uq_call_participant_role")
+  @@index([user_id, call_id], map: "idx_call_participants_user_call")
+}
+
+model call_recording_consents {
+  id           BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
+  call_id      BigInt        @db.UnsignedBigInt
+  user_id      BigInt        @db.UnsignedBigInt
+  consented_at DateTime?     @db.DateTime(0)
+  revoked_at   DateTime?     @db.DateTime(0)
+  updated_at   DateTime      @default(now()) @db.DateTime(0)
+  calls        call_sessions @relation(fields: [call_id], references: [id], onDelete: Cascade, map: "fk_call_recording_consents_call")
+  users        users         @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_call_recording_consents_user")
+
+  @@unique([call_id, user_id], map: "uq_call_recording_consent")
+  @@index([user_id, call_id], map: "idx_call_recording_consents_user")
+}
+
+model call_recordings {
+  id                   BigInt                 @id @default(autoincrement()) @db.UnsignedBigInt
+  call_id              BigInt                 @db.UnsignedBigInt
+  egress_id            String?                @unique(map: "uq_call_recordings_egress") @db.VarChar(128)
+  object_key           String                 @unique(map: "uq_call_recordings_object_key") @db.VarChar(512)
+  status               call_recordings_status @default(starting)
+  content_type         String                 @default("video/mp4") @db.VarChar(100)
+  file_size            BigInt?                @db.UnsignedBigInt
+  duration_ms          BigInt?                @db.UnsignedBigInt
+  started_at           DateTime?              @db.DateTime(0)
+  completed_at         DateTime?              @db.DateTime(0)
+  retention_expires_at DateTime?              @db.DateTime(0)
+  deleted_at           DateTime?              @db.DateTime(0)
+  last_egress_event_at DateTime?              @db.DateTime(0)
+  last_error           String?                @db.VarChar(500)
+  created_at           DateTime               @default(now()) @db.DateTime(0)
+  updated_at           DateTime               @default(now()) @db.DateTime(0)
+  calls                call_sessions          @relation(fields: [call_id], references: [id], onDelete: Cascade, map: "fk_call_recordings_call")
+
+  @@index([call_id, created_at], map: "idx_call_recordings_call_created")
+  @@index([status, retention_expires_at], map: "idx_call_recordings_retention")
+}
+
+model livekit_webhook_events {
+  id                BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  webhook_id        String    @unique(map: "uq_livekit_webhook_id") @db.Char(36)
+  event_type        String    @db.VarChar(40)
+  egress_id         String?   @db.VarChar(128)
+  egress_status     Int?
+  event_created_at  DateTime  @db.DateTime(0)
+  egress_started_at DateTime? @db.DateTime(0)
+  egress_ended_at   DateTime? @db.DateTime(0)
+  file_size         BigInt?   @db.UnsignedBigInt
+  duration_ms       BigInt?   @db.UnsignedBigInt
+  error_code        Int?
+  error_message     String?   @db.VarChar(500)
+  received_at       DateTime  @default(now()) @db.DateTime(0)
+  processed_at      DateTime? @db.DateTime(0)
+
+  @@index([egress_id, processed_at, event_created_at], map: "idx_livekit_webhooks_pending")
+}
+
 model conversations {
   id                   BigInt                 @id @default(autoincrement()) @db.UnsignedBigInt
   type                 conversations_type     @default(direct)
@@ -62,6 +158,7 @@ model conversations {
   updated_at           DateTime               @default(now()) @db.DateTime(0)
   direct_user_high_id  BigInt?                @db.UnsignedBigInt
   direct_user_low_id   BigInt?                @db.UnsignedBigInt
+  call_sessions        call_sessions[]
   conversation_members conversation_members[]
   users                users?                 @relation(fields: [created_by], references: [id], map: "fk_conversations_creator")
   direct_user_high     users?                 @relation("direct_conversations_high", fields: [direct_user_high_id], references: [id], map: "fk_conversations_direct_high")
@@ -312,6 +409,9 @@ model users {
   deleted_at                                  DateTime?                   @db.DateTime(0)
   created_at                                  DateTime                    @default(now()) @db.DateTime(0)
   updated_at                                  DateTime                    @default(now()) @db.DateTime(0)
+  call_participants                           call_participants[]
+  call_recording_consents                     call_recording_consents[]
+  call_sessions                               call_sessions[]
   comments                                    comments[]
   conversation_members                        conversation_members[]
   conversations                               conversations[]
@@ -347,6 +447,45 @@ model system_error_logs {
 enum conversations_type {
   direct
   group
+}
+
+enum call_sessions_type {
+  audio
+  video
+}
+
+enum call_sessions_status {
+  ringing
+  accepted
+  declined
+  cancelled
+  ended
+  failed
+}
+
+enum call_sessions_end_reason {
+  declined
+  cancelled
+  ended
+  failed
+  timeout
+}
+
+enum call_participant_role {
+  caller
+  callee
+}
+
+enum call_recordings_status {
+  starting
+  active
+  stopping
+  stop_failed
+  completed
+  failed
+  deleting
+  delete_failed
+  deleted
 }
 
 enum attachments_owner_type {

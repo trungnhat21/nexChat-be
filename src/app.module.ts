@@ -11,6 +11,7 @@ import { UsersModule } from "./users/users.module.js";
 import { RedisModule } from "./redis/redis.module.js";
 import { MessagingModule } from "./messaging/messaging.module.js";
 import { StoriesModule } from "./stories/stories.module.js";
+import { CallsModule } from "./calls/calls.module.js";
 
 @Module({
     imports: [
@@ -28,6 +29,7 @@ import { StoriesModule } from "./stories/stories.module.js";
         RedisModule,
         MessagingModule,
         StoriesModule,
+        CallsModule,
     ],
 })
 export class AppModule {}
