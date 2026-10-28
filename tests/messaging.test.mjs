@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { BadRequestException, ForbiddenException, NotFoundException } from "@nestjs/common";
 import { MessagingService } from "../dist/messaging/messaging.service.js";
 import { NotificationsGateway } from "../dist/notifications/notifications.gateway.js";
+import { createAccessToken } from "../dist/utils/token.js";
 import { parseClientMessageId, parseDirectRecipient, parseMessageContent, parseMessageCursor, parseMessageLimit, parseMessagingId, parseSendMessage, parseVisibleMessageIds } from "../dist/messaging/messaging.validation.js";
 
 const uuid = "d4d8c9f1-3d4d-4a17-8f62-5784fc9520d1";
@@ -130,6 +131,34 @@ test("presence tracks multiple tabs and expires stale heartbeat sessions", () =>
     assert.equal(gateway.isOnline("9"), true);
     gateway.sessions.get("9").set("tab-b", Date.now() - 80_000);
     assert.equal(gateway.isOnline("9"), false);
+    gateway.onModuleDestroy();
+});
+
+test("authenticated socket receives a friend presence snapshot without waiting for presence:watch", async () => {
+    const emitted = [];
+    const handlers = new Map();
+    const client = {
+        id: "fresh-tab",
+        handshake: { auth: { token: createAccessToken(1n, "presence-snapshot-test") } },
+        data: {},
+        conn: { on() {} },
+        join: async () => {},
+        on: (event, handler) => handlers.set(event, handler),
+        emit: (event, payload) => emitted.push({ event, payload }),
+        disconnect() { assert.fail("valid session should stay connected"); },
+    };
+    const gateway = new NotificationsGateway(
+        { getSessionCurrentUser: async (sessionId, userId) => sessionId === "presence-snapshot-test" && userId === 1n ? { id: "1" } : null },
+        { friendships: { findMany: async () => [{ requester_id: 1n, addressee_id: 2n }] } },
+    );
+    gateway.sessions.set("2", new Map([["friend-tab", Date.now()]]));
+    gateway.server = { to: () => ({ emit() {} }) };
+
+    await gateway.handleConnection(client);
+
+    const snapshot = emitted.find(item => item.event === "presence:snapshot");
+    assert.deepEqual(snapshot?.payload, { "2": true });
+    assert.equal(handlers.has("presence:watch"), true, "manual/reconnect resync remains available");
     gateway.onModuleDestroy();
 });
 

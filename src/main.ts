@@ -1,17 +1,15 @@
 import "dotenv/config";
 import "reflect-metadata";
-import cookieParser from "cookie-parser";
-import express from "express";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module.js";
+import { installRequestBodyParsers } from "./utils/http-body-parser.js";
 
 async function bootstrap(): Promise<void> {
     const app = await NestFactory.create(AppModule, {
         bodyParser: false,
     });
 
-    app.use(express.json());
-    app.use(cookieParser());
+    installRequestBodyParsers(app.getHttpAdapter().getInstance());
     app.enableShutdownHooks();
 
     const port = process.env.PORT || 3000;

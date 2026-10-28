@@ -30,6 +30,14 @@ test("cleans new MinIO objects if saving the profile fails",async()=>{
         {upload:async()=>({key:"profiles/1/new.png"}),remove:async keys=>removed.push(...keys)},{});
     await assert.rejects(service.upload(1n,"avatar",file),/database failure/);assert.deepEqual(removed,["profiles/1/new.png"]);
 });
+test("removing a cover clears only cover_url and preserves the avatar object",async()=>{
+    const removed=[];let profile={cover_url:"profiles/1/cover.png",avatar_url:"profiles/1/avatar.png"};
+    const user={id:1n,avatar:"profiles/1/avatar.png",deleted:"NO"};
+    const tx={users:{findFirst:async()=>user},profiles:{findUnique:async()=>profile,updateMany:async({data})=>{profile={...profile,...data};return {count:1};}}};
+    const service=new ProfileImagesService({$transaction:async callback=>callback(tx)},{remove:async keys=>removed.push(...keys)},{syncProfileImage:async()=>assert.fail("cover deletion must not change avatar sync")});
+    assert.deepEqual(await service.remove(1n,"cover"),{success:true,kind:"cover",url:null});
+    assert.equal(profile.cover_url,null);assert.equal(profile.avatar_url,"profiles/1/avatar.png");assert.deepEqual(removed,["profiles/1/cover.png"]);
+});
 test("profile image HTTP endpoint requires auth, uses session ID and accepts one multipart image",async()=>{
     const calls=[];const images={upload:async(userId,kind,image)=>{calls.push({userId,kind,image});return {success:true,kind,url:"https://example.invalid/avatar.png"};}};
     class TestModule{};Module({controllers:[ProfileImagesController],providers:[AuthGuard,{provide:AuthService,useValue:{getSessionCurrentUser:async(session,id)=>session==="profile-image-test"&&id===1n?{id:"1"}:null}},{provide:ProfileImagesService,useValue:images}]})(TestModule);
