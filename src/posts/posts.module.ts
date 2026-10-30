@@ -6,5 +6,5 @@ import { PostsService } from "./posts.service.js";
 import { StorageModule } from "../storage/storage.module.js";
 import { NotificationsModule } from "../notifications/notifications.module.js";
 
-@Module({ imports: [AuthModule, PrismaModule, StorageModule, NotificationsModule], controllers: [PostsController], providers: [PostsService] })
+@Module({ imports: [AuthModule, PrismaModule, StorageModule, NotificationsModule], controllers: [PostsController], providers: [PostsService], exports: [PostsService] })
 export class PostsModule {}

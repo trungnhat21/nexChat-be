@@ -5,6 +5,7 @@ import { PostStorageService } from "./post-storage.service.js";
 import { POST_LIMITS, type PostView, type PostMutation, type StoredMedia, type UploadedMedia } from "./posts.types.js";
 import { validateMedia } from "./posts.validation.js";
 import { NotificationsService } from "../notifications/notifications.service.js";
+import { getPeriodStartDate, type SearchFilterOptions } from "../search/search.validation.js";
 
 const postInclude = {
     users: { select: { id: true, first_name: true, last_name: true, user_name: true, avatar: true, profiles: { select: { display_name: true, avatar_url: true } } } },
@@ -54,6 +55,75 @@ export class PostsService {
         return { success: true, posts, nextCursor: hasMore ? posts.at(-1)?.id ?? null : null,
             ...(author ? { total, author: { id: author.id.toString(), name: author.profiles?.display_name || [author.last_name, author.first_name].filter(Boolean).join(" ") || author.user_name || "User", handle: author.user_name, avatar: await this.profileImage(author.profiles?.avatar_url || author.avatar), cover: await this.profileImage(author.profiles?.cover_url ?? null), bio: author.profiles?.bio ?? null, createdAt: author.created_at.toISOString() } } : {}),
         };
+    }
+
+    async searchVisible(userId: bigint, keyword: string, cursor?: bigint, pageSize = 6, options?: SearchFilterOptions) {
+        const { where: scope, friendIds } = await this.searchScope(userId);
+        const where: Prisma.postsWhereInput = {
+            ...scope,
+            AND: [
+                { OR: [{ privacy: "public" }, { user_id: userId }, { privacy: "friends", user_id: { in: friendIds } }] },
+                { OR: [
+                    { content: { contains: keyword } },
+                    { users: { first_name: { contains: keyword } } },
+                    { users: { last_name: { contains: keyword } } },
+                    { users: { user_name: { contains: keyword } } },
+                ] },
+            ],
+        };
+
+        if (options?.period && options.period !== "all") {
+            const startDate = getPeriodStartDate(options.period);
+            if (startDate) {
+                where.created_at = { gte: startDate };
+            }
+        }
+
+        if (options?.mediaOnly) {
+            const postAttachments = await this.prisma.attachments.findMany({
+                where: { owner_type: "post" },
+                select: { owner_id: true },
+                distinct: ["owner_id"],
+            });
+            const postIdsWithMedia = postAttachments.map(a => a.owner_id);
+            where.id = { in: postIdsWithMedia, ...(cursor !== undefined ? { lt: cursor } : {}) };
+        } else if (cursor !== undefined) {
+            where.id = { lt: cursor };
+        }
+
+        const orderBy: Prisma.postsOrderByWithRelationInput[] =
+            options?.sort === "latest"
+                ? [{ created_at: "desc" }, { id: "desc" }]
+                : [{ id: "desc" }];
+
+        const rows = await this.prisma.posts.findMany({ where, orderBy, take: pageSize + 1, include: postInclude });
+        const hasMore = rows.length > pageSize;
+        const items = await this.serialize(rows.slice(0, pageSize), userId);
+        return { items, nextCursor: hasMore ? items.at(-1)?.id ?? null : null };
+    }
+
+    async searchHashtagSource(userId: bigint, keyword: string, take = 1000): Promise<Array<{ id: bigint; content: string }>> {
+        const { where: scope } = await this.searchScope(userId);
+        const rows = await this.prisma.posts.findMany({
+            where: { ...scope, content: { contains: keyword }, users: { deleted: "NO", status: "active" } },
+            select: { id: true, content: true }, orderBy: { id: "desc" }, take,
+        });
+        return rows.flatMap(row => row.content === null ? [] : [{ id: row.id, content: row.content }]);
+    }
+
+    private async searchScope(userId: bigint): Promise<{ where: Prisma.postsWhereInput; friendIds: bigint[] }> {
+        const [friends, blocked] = await Promise.all([
+            this.prisma.friendships.findMany({ where: { status: "accepted", OR: [{ requester_id: userId }, { addressee_id: userId }] }, select: { requester_id: true, addressee_id: true } }),
+            this.prisma.friendships.findMany({ where: { status: "blocked", OR: [{ requester_id: userId }, { addressee_id: userId }] }, select: { requester_id: true, addressee_id: true } }),
+        ]);
+        const friendIds = friends.map(row => row.requester_id === userId ? row.addressee_id : row.requester_id);
+        const blockedIds = blocked.map(row => row.requester_id === userId ? row.addressee_id : row.requester_id);
+        const where: Prisma.postsWhereInput = {
+            deleted_at: null,
+            users: { deleted: "NO", status: "active" },
+            ...(blockedIds.length ? { user_id: { notIn: blockedIds } } : {}),
+        };
+        return { where, friendIds };
     }
     private async profileImage(value: string | null): Promise<string | null> {
         return value?.startsWith("profiles/") ? this.storage.url(value, null) : value;
