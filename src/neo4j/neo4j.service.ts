@@ -65,8 +65,9 @@ export class Neo4jService implements OnModuleInit, OnModuleDestroy {
         } catch (error) {
             await driver?.close();
             const message = error instanceof Error ? error.message : "Unknown error";
-            this.logger.error(`Unable to connect to Neo4j: ${message}`);
-            throw error;
+            this.logger.warn(
+                `Unable to connect to Neo4j; continuing with MariaDB as the source of truth: ${message}`,
+            );
         }
     }
 
