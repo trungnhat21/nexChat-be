@@ -34,9 +34,9 @@ export type SearchSort = "relevance" | "latest";
 export type SearchPeriod = "all" | "24h" | "week" | "month";
 
 export interface SearchFilterOptions {
-    sort?: SearchSort;
-    period?: SearchPeriod;
-    mediaOnly?: boolean;
+    sort?: SearchSort | undefined;
+    period?: SearchPeriod | undefined;
+    mediaOnly?: boolean | undefined;
 }
 
 export function parseSearchSort(value: unknown): SearchSort {

@@ -54,3 +54,21 @@ export function parseRepost(raw: unknown) {
     if (typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => key !== "content" && key !== "privacy")) throw new BadRequestException("Nội dung đăng lại không hợp lệ.");
     return parseMutation({ content: body.content ?? "", privacy: body.privacy ?? "public" });
 }
+
+export function parsePostSort(value: unknown, hasSearch = false): "relevance" | "latest" {
+    if (value === "latest" || value === "newest") return "latest";
+    if (value === "relevance") return "relevance";
+    return hasSearch ? "relevance" : "latest";
+}
+
+export function parsePostPeriod(value: unknown): "all" | "24h" | "week" | "month" {
+    if (value === "24h" || value === "day") return "24h";
+    if (value === "week") return "week";
+    if (value === "month") return "month";
+    return "all";
+}
+
+export function parsePostMediaOnly(value: unknown): boolean {
+    if (value === true || value === "true" || value === "1" || value === 1) return true;
+    return false;
+}

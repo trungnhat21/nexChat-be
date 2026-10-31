@@ -3,8 +3,8 @@ import { FilesInterceptor } from "@nestjs/platform-express";
 import { AuthGuard } from "../auth/auth.guard.js";
 import type { AuthenticatedRequest } from "../auth/auth.types.js";
 import { PostsService } from "./posts.service.js";
-import { POST_LIMITS, type UploadedMedia } from "./posts.types.js";
-import { parseId, parseMutation, parseComment, parseRepost } from "./posts.validation.js";
+import { POST_LIMITS, type UploadedMedia, type GetPostsDto } from "./posts.types.js";
+import { parseId, parseMutation, parseComment, parseRepost, parsePostSort, parsePostPeriod, parsePostMediaOnly } from "./posts.validation.js";
 
 const mediaInterceptor = FilesInterceptor("media", POST_LIMITS.files, {
     limits: { files: POST_LIMITS.files, fileSize: POST_LIMITS.fileBytes, fields: 3, fieldSize: 24 * 1024, parts: 9 },
@@ -15,14 +15,47 @@ const mediaInterceptor = FilesInterceptor("media", POST_LIMITS.files, {
 export class PostsController {
     constructor(private readonly posts: PostsService) {}
     @Get()
-    list(@Req() request: AuthenticatedRequest, @Query("cursor") cursor: unknown, @Query("search") search: unknown, @Query("authorId") authorId: unknown) {
+    list(
+        @Req() request: AuthenticatedRequest,
+        @Query("cursor") cursor: unknown,
+        @Query("search") search: unknown,
+        @Query("authorId") authorId: unknown,
+        @Query("sort") sort: unknown,
+        @Query("period") period: unknown,
+        @Query("mediaOnly") mediaOnly: unknown,
+    ) {
         if (search !== undefined && (typeof search !== "string" || search.length > 200)) throw new BadRequestException("Tìm kiếm tối đa 200 ký tự.");
-        return this.posts.list(request.userId!, cursor === undefined ? undefined : parseId(cursor), typeof search === "string" ? search.trim() : "", authorId === undefined ? undefined : parseId(authorId));
+        const searchQuery = typeof search === "string" ? search.trim() : "";
+        const dto: GetPostsDto = {
+            ...(cursor === undefined ? {} : { cursor: parseId(cursor) }),
+            search: searchQuery,
+            ...(authorId === undefined ? {} : { authorId: parseId(authorId) }),
+            sort: parsePostSort(sort, Boolean(searchQuery)),
+            period: parsePostPeriod(period),
+            mediaOnly: parsePostMediaOnly(mediaOnly),
+        };
+        return this.posts.list(request.userId!, dto);
     }
     @Get("saved")
-    saved(@Req() request: AuthenticatedRequest, @Query("cursor") cursor: unknown, @Query("search") search: unknown) {
+    saved(
+        @Req() request: AuthenticatedRequest,
+        @Query("cursor") cursor: unknown,
+        @Query("search") search: unknown,
+        @Query("sort") sort: unknown,
+        @Query("period") period: unknown,
+        @Query("mediaOnly") mediaOnly: unknown,
+    ) {
         if (search !== undefined && (typeof search !== "string" || search.length > 200)) throw new BadRequestException("Tìm kiếm tối đa 200 ký tự.");
-        return this.posts.list(request.userId!, cursor === undefined ? undefined : parseId(cursor), typeof search === "string" ? search.trim() : "", undefined, true);
+        const searchQuery = typeof search === "string" ? search.trim() : "";
+        const dto: GetPostsDto = {
+            ...(cursor === undefined ? {} : { cursor: parseId(cursor) }),
+            search: searchQuery,
+            sort: parsePostSort(sort, Boolean(searchQuery)),
+            period: parsePostPeriod(period),
+            mediaOnly: parsePostMediaOnly(mediaOnly),
+            savedOnly: true,
+        };
+        return this.posts.list(request.userId!, dto);
     }
     @Get(":id")
     get(@Req() request: AuthenticatedRequest, @Param("id") id: string) { return this.posts.get(request.userId!, parseId(id)); }

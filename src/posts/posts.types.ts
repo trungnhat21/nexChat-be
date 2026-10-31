@@ -29,3 +29,16 @@ export interface PostView {
     media: { id: string; url: string; type: string; name: string; size: number }[];
     isRepost: boolean; original: PostView | null;
 }
+
+export type PostSort = "relevance" | "latest";
+export type PostPeriod = "all" | "24h" | "week" | "month";
+
+export interface GetPostsDto {
+    cursor?: bigint | undefined;
+    search?: string | undefined;
+    authorId?: bigint | undefined;
+    savedOnly?: boolean | undefined;
+    sort?: PostSort | undefined;
+    period?: PostPeriod | undefined;
+    mediaOnly?: boolean | undefined;
+}

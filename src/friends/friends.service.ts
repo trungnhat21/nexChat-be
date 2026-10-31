@@ -270,18 +270,62 @@ export class FriendsService {
     }
 
     async getSuggestions(currentUserId: bigint) {
-        const users = await this.prisma.users.findMany({ where: { id: { not: currentUserId }, deleted: "NO", status: "active" }, select: { id: true, user_name: true, first_name: true, last_name: true, avatar: true, profiles: { select: { avatar_url: true } } }, orderBy: { id: "desc" }, take: 12 });
+        const excludedFriendships = await this.prisma.friendships.findMany({
+            where: {
+                status: { in: ["accepted", "blocked"] },
+                OR: [
+                    { requester_id: currentUserId },
+                    { addressee_id: currentUserId },
+                ],
+            },
+            select: { requester_id: true, addressee_id: true },
+        });
+
+        const excludedUserIds = new Set<bigint>([currentUserId]);
+        for (const item of excludedFriendships) {
+            excludedUserIds.add(item.requester_id === currentUserId ? item.addressee_id : item.requester_id);
+        }
+
+        const users = await this.prisma.users.findMany({
+            where: {
+                id: { notIn: Array.from(excludedUserIds) },
+                deleted: "NO",
+                status: "active",
+            },
+            select: {
+                id: true,
+                user_name: true,
+                first_name: true,
+                last_name: true,
+                avatar: true,
+                profiles: { select: { avatar_url: true } },
+            },
+            orderBy: { id: "desc" },
+            take: 20,
+        });
+
         const ids = users.map(user => user.id);
         const [friendships, follows] = await Promise.all([
             ids.length ? this.prisma.friendships.findMany({ where: { OR: [{ requester_id: currentUserId, addressee_id: { in: ids } }, { requester_id: { in: ids }, addressee_id: currentUserId }] } }) : [],
             ids.length ? this.prisma.follows.findMany({ where: { follower_id: currentUserId, following_id: { in: ids } }, select: { following_id: true } }) : [],
         ]);
-        return Promise.all(users.map(async user => {
+
+        const results = await Promise.all(users.map(async user => {
             const edge = friendships.find(item => item.requester_id === user.id || item.addressee_id === user.id);
             const friendStatus = !edge ? "none" : edge.status === "accepted" ? "friends" : edge.status === "blocked" ? "blocked" : edge.status === "pending" ? edge.requester_id === currentUserId ? "outgoing" : "incoming" : "none";
             const avatar = user.profiles?.avatar_url || user.avatar;
-            return { id: user.id.toString(), name: [user.last_name, user.first_name].filter(Boolean).join(" ") || user.user_name || "User", avatar: avatar?.startsWith("profiles/") ? await this.storage.url(avatar, null) : avatar, friendStatus, requestId: edge?.status === "pending" ? edge.id.toString() : null, following: follows.some(item => item.following_id === user.id) };
+            return {
+                id: user.id.toString(),
+                name: [user.last_name, user.first_name].filter(Boolean).join(" ") || user.user_name || "User",
+                username: user.user_name,
+                avatar: avatar?.startsWith("profiles/") ? await this.storage.url(avatar, null) : avatar,
+                friendStatus,
+                requestId: edge?.status === "pending" ? edge.id.toString() : null,
+                following: follows.some(item => item.following_id === user.id),
+            };
         }));
+
+        return results.filter(u => u.friendStatus !== "friends" && u.friendStatus !== "blocked");
     }
 
     async getFriends(currentUserId: bigint) {

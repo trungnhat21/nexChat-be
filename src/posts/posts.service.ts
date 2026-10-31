@@ -2,7 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundEx
 import type { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { PostStorageService } from "./post-storage.service.js";
-import { POST_LIMITS, type PostView, type PostMutation, type StoredMedia, type UploadedMedia } from "./posts.types.js";
+import { POST_LIMITS, type PostView, type PostMutation, type StoredMedia, type UploadedMedia, type GetPostsDto, type PostSort, type PostPeriod } from "./posts.types.js";
 import { validateMedia } from "./posts.validation.js";
 import { NotificationsService } from "../notifications/notifications.service.js";
 import { getPeriodStartDate, type SearchFilterOptions } from "../search/search.validation.js";
@@ -22,7 +22,66 @@ export class PostsService {
         void this.notifications.notifyPostPublished(authorId, postId, privacy).catch(error => this.logger.error("Failed to notify post audience", error));
     }
 
-    async list(userId: bigint, cursor?: bigint, search = "", authorId?: bigint, savedOnly = false) {
+    private calculatePostRelevance(row: PostRow, query: string): number {
+        if (!query) return 0;
+        const q = query.trim().toLocaleLowerCase("vi");
+        if (!q) return 0;
+        let score = 0;
+        const content = (row.content || "").toLocaleLowerCase("vi");
+        const name = [row.users?.first_name, row.users?.last_name, row.users?.profiles?.display_name, row.users?.user_name]
+            .filter(Boolean)
+            .join(" ")
+            .toLocaleLowerCase("vi");
+
+        if (content.includes(q)) {
+            score += 40;
+            const matches = content.split(q).length - 1;
+            score += Math.min(matches * 10, 50);
+            if (content.startsWith(q)) score += 20;
+        }
+        if (name.includes(q)) {
+            score += 30;
+        }
+        const words = q.split(/\s+/).filter(w => w.length > 1);
+        if (words.length > 1) {
+            for (const word of words) {
+                if (content.includes(word)) score += 5;
+                if (name.includes(word)) score += 5;
+            }
+        }
+        return score;
+    }
+
+    async list(
+        userId: bigint,
+        dtoOrCursor?: GetPostsDto | bigint,
+        legacySearchOrSaved: string | boolean = "",
+        legacyAuthorId?: bigint,
+        legacySavedOnly = false,
+    ) {
+        let dto: GetPostsDto;
+        if (typeof dtoOrCursor === "object" && dtoOrCursor !== null) {
+            dto = dtoOrCursor;
+        } else {
+            dto = {
+                cursor: typeof dtoOrCursor === "bigint" ? dtoOrCursor : undefined,
+                search: typeof legacySearchOrSaved === "string" ? legacySearchOrSaved : "",
+                authorId: legacyAuthorId,
+                savedOnly: typeof legacySearchOrSaved === "boolean" ? legacySearchOrSaved : legacySavedOnly,
+                sort: typeof legacySearchOrSaved === "string" && legacySearchOrSaved.trim() ? "relevance" : "latest",
+                period: "all",
+                mediaOnly: false,
+            };
+        }
+
+        const cursor = dto.cursor;
+        const search = dto.search?.trim() ?? "";
+        const authorId = dto.authorId;
+        const savedOnly = dto.savedOnly ?? false;
+        const sort = dto.sort ?? (search ? "relevance" : "latest");
+        const period = dto.period ?? "all";
+        const mediaOnly = dto.mediaOnly ?? false;
+
         const author = authorId === undefined ? null : await this.prisma.users.findFirst({
             where: { id: authorId, deleted: "NO" },
             select: { id: true, first_name: true, last_name: true, user_name: true, avatar: true, created_at: true, profiles: { select: { display_name: true, avatar_url: true, cover_url: true, bio: true } } },
@@ -44,15 +103,51 @@ export class PostsService {
             { users: { first_name: { contains: search } } }, { users: { last_name: { contains: search } } },
             { users: { user_name: { contains: search } } },
         ] }];
+
+        if (period && period !== "all") {
+            const startDate = getPeriodStartDate(period);
+            if (startDate) {
+                where.created_at = { gte: startDate };
+            }
+        }
+
+        if (mediaOnly) {
+            const postAttachments = await this.prisma.attachments.findMany({
+                where: { owner_type: "post" },
+                select: { owner_id: true },
+                distinct: ["owner_id"],
+            });
+            const postIdsWithMedia = postAttachments.map(a => a.owner_id);
+            where.id = { in: postIdsWithMedia, ...(cursor !== undefined ? { lt: cursor } : {}) };
+        } else if (cursor !== undefined) {
+            where.id = { lt: cursor };
+        }
+
         const countWhere = { ...where };
-        if (cursor !== undefined) where.id = { lt: cursor };
+        const orderBy: Prisma.postsOrderByWithRelationInput[] = [{ created_at: "desc" }, { id: "desc" }];
+
         const [rows, total] = await Promise.all([
-            this.prisma.posts.findMany({ where, orderBy: { id: "desc" }, take: 21, include: postInclude }),
+            this.prisma.posts.findMany({ where, orderBy, take: 21, include: postInclude }),
             authorId === undefined ? Promise.resolve(undefined) : this.prisma.posts.count({ where: countWhere }),
         ]);
+
         const hasMore = rows.length > 20;
-        const posts = await this.serialize(rows.slice(0,20), userId);
-        return { success: true, posts, nextCursor: hasMore ? posts.at(-1)?.id ?? null : null,
+        let pageRows = rows.slice(0, 20);
+
+        if (sort === "relevance" && search) {
+            pageRows = [...pageRows].sort((a, b) => {
+                const scoreA = this.calculatePostRelevance(a, search);
+                const scoreB = this.calculatePostRelevance(b, search);
+                if (scoreB !== scoreA) return scoreB - scoreA;
+                return b.created_at.getTime() - a.created_at.getTime();
+            });
+        }
+
+        const posts = await this.serialize(pageRows, userId);
+        return {
+            success: true,
+            posts,
+            nextCursor: hasMore ? (rows[19]?.id ? rows[19].id.toString() : null) : null,
             ...(author ? { total, author: { id: author.id.toString(), name: author.profiles?.display_name || [author.last_name, author.first_name].filter(Boolean).join(" ") || author.user_name || "User", handle: author.user_name, avatar: await this.profileImage(author.profiles?.avatar_url || author.avatar), cover: await this.profileImage(author.profiles?.cover_url ?? null), bio: author.profiles?.bio ?? null, createdAt: author.created_at.toISOString() } } : {}),
         };
     }
@@ -91,15 +186,23 @@ export class PostsService {
             where.id = { lt: cursor };
         }
 
-        const orderBy: Prisma.postsOrderByWithRelationInput[] =
-            options?.sort === "latest"
-                ? [{ created_at: "desc" }, { id: "desc" }]
-                : [{ id: "desc" }];
+        const orderBy: Prisma.postsOrderByWithRelationInput[] = [{ created_at: "desc" }, { id: "desc" }];
 
         const rows = await this.prisma.posts.findMany({ where, orderBy, take: pageSize + 1, include: postInclude });
         const hasMore = rows.length > pageSize;
-        const items = await this.serialize(rows.slice(0, pageSize), userId);
-        return { items, nextCursor: hasMore ? items.at(-1)?.id ?? null : null };
+        let pageRows = rows.slice(0, pageSize);
+
+        if ((!options?.sort || options.sort === "relevance") && keyword) {
+            pageRows = [...pageRows].sort((a, b) => {
+                const scoreA = this.calculatePostRelevance(a, keyword);
+                const scoreB = this.calculatePostRelevance(b, keyword);
+                if (scoreB !== scoreA) return scoreB - scoreA;
+                return b.created_at.getTime() - a.created_at.getTime();
+            });
+        }
+
+        const items = await this.serialize(pageRows, userId);
+        return { items, nextCursor: hasMore ? (rows[pageSize - 1]?.id?.toString() ?? null) : null };
     }
 
     async searchHashtagSource(userId: bigint, keyword: string, take = 1000): Promise<Array<{ id: bigint; content: string }>> {
