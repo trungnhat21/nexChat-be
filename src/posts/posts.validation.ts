@@ -3,11 +3,13 @@ import { basename } from "node:path";
 import { POST_LIMITS, type PostMutation, type UploadedMedia } from "./posts.types.js";
 
 export function parseId(value: unknown): bigint {
-    if (typeof value !== "string" || !/^[1-9]\d{0,19}$/.test(value)) throw new BadRequestException("ID không hợp lệ.");
-    const id = BigInt(value);
+    const text = typeof value === "string" ? value : typeof value === "number" && Number.isSafeInteger(value) ? String(value) : "";
+    if (!text || !/^[1-9]\d{0,19}$/.test(text)) throw new BadRequestException("ID không hợp lệ.");
+    const id = BigInt(text);
     if (id > 18446744073709551615n) throw new BadRequestException("ID không hợp lệ.");
     return id;
 }
+
 export function parseMutation(raw: unknown, requireMediaState = false): PostMutation {
     if (!raw || typeof raw !== "object") throw new BadRequestException("Nội dung không hợp lệ.");
     const body = raw as Record<string, unknown>;
@@ -21,8 +23,20 @@ export function parseMutation(raw: unknown, requireMediaState = false): PostMuta
     if (!Array.isArray(ids) || ids.length > POST_LIMITS.files) throw new BadRequestException("Tối đa 5 media mỗi bài.");
     const keepMediaIds = ids.map(parseId);
     if (new Set(keepMediaIds).size !== keepMediaIds.length) throw new BadRequestException("Media bị trùng lặp.");
-    return { content: body.content.trim(), privacy, keepMediaIds };
+
+    let groupId: bigint | undefined = undefined;
+    if (body.groupId !== undefined && body.groupId !== null && body.groupId !== "") {
+        groupId = parseId(body.groupId);
+    }
+
+    return {
+        content: body.content.trim(),
+        privacy,
+        keepMediaIds,
+        ...(groupId !== undefined ? { groupId } : {}),
+    };
 }
+
 export function validateMedia(files: UploadedMedia[]): void {
     if (files.length > POST_LIMITS.files) throw new BadRequestException("Tối đa 5 media mỗi bài.");
     if (files.reduce((sum, file) => sum + file.size, 0) > POST_LIMITS.totalBytes) throw new BadRequestException("Tổng media tối đa 50 MB.");
@@ -38,6 +52,7 @@ export function validateMedia(files: UploadedMedia[]): void {
         if (!valid) throw new BadRequestException("Chỉ nhận ảnh JPEG, PNG, GIF, WebP và video MP4, WebM đúng định dạng.");
     }
 }
+
 export function safeFilename(name: string): string {
     return basename(name.replace(/\\/g, "/")).replace(/[\x00-\x1f\x7f]/g, "").slice(0, 255) || "media";
 }
@@ -49,6 +64,7 @@ export function parseComment(raw: unknown): { content: string; parentCommentId?:
     if (body.parentCommentId !== undefined && typeof body.parentCommentId !== "string") throw new BadRequestException("ID bình luận trả lời không hợp lệ.");
     return { content: body.content.trim(), ...(body.parentCommentId !== undefined ? { parentCommentId: parseId(body.parentCommentId) } : {}) };
 }
+
 export function parseRepost(raw: unknown) {
     const body = (raw ?? {}) as Record<string, unknown>;
     if (typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => key !== "content" && key !== "privacy")) throw new BadRequestException("Nội dung đăng lại không hợp lệ.");
@@ -71,4 +87,13 @@ export function parsePostPeriod(value: unknown): "all" | "24h" | "week" | "month
 export function parsePostMediaOnly(value: unknown): boolean {
     if (value === true || value === "true" || value === "1" || value === 1) return true;
     return false;
+}
+
+export function parseApproveAction(raw: unknown): "approve" | "reject" {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new BadRequestException("Dữ liệu không hợp lệ.");
+    const body = raw as Record<string, unknown>;
+    if (body.action !== "approve" && body.action !== "reject") {
+        throw new BadRequestException("Hành động phải là 'approve' hoặc 'reject'.");
+    }
+    return body.action;
 }

@@ -95,7 +95,7 @@ export class PostsService {
         const visible: Prisma.postsWhereInput = { OR: [
             { privacy: "public" }, { user_id: userId }, { privacy: "friends", user_id: { in: friendIds } },
         ] };
-        const where: Prisma.postsWhereInput = { deleted_at: null, AND: [visible] };
+        const where: Prisma.postsWhereInput = { deleted_at: null, approval_status: "PUBLISHED", AND: [visible] };
         if (savedOnly) where.saved_posts = { some: { user_id: userId } };
         if (authorId !== undefined) where.user_id = authorId;
         if (search) where.AND = [visible, { OR: [
@@ -223,6 +223,7 @@ export class PostsService {
         const blockedIds = blocked.map(row => row.requester_id === userId ? row.addressee_id : row.requester_id);
         const where: Prisma.postsWhereInput = {
             deleted_at: null,
+            approval_status: "PUBLISHED",
             users: { deleted: "NO", status: "active" },
             ...(blockedIds.length ? { user_id: { notIn: blockedIds } } : {}),
         };
@@ -258,6 +259,8 @@ export class PostsService {
                 id: file.id.toString(), url: await this.storage.url(file.file_url, file.file_type),
                 type: file.file_type ?? "application/octet-stream", name: file.file_name ?? "media", size: Number(file.file_size ?? 0),
             }))),
+            groupId: row.group_id ? row.group_id.toString() : null,
+            approvalStatus: row.approval_status,
         })));
     }
     private async visibleWhere(userId: bigint): Promise<Prisma.postsWhereInput> {
@@ -266,12 +269,15 @@ export class PostsService {
             select: { requester_id: true, addressee_id: true },
         });
         const ids = friends.map(friend => friend.requester_id === userId ? friend.addressee_id : friend.requester_id);
-        return { deleted_at: null, OR: [{ privacy: "public" }, { user_id: userId }, { privacy: "friends", user_id: { in: ids } }] };
+        return { deleted_at: null, approval_status: "PUBLISHED", OR: [{ privacy: "public" }, { user_id: userId }, { privacy: "friends", user_id: { in: ids } }] };
     }
     async visiblePost(userId: bigint, id: bigint, tx: Prisma.TransactionClient = this.prisma, lock = false) {
         if (lock) await tx.$queryRaw`SELECT id FROM posts WHERE id = ${id} FOR UPDATE`;
         const post = await tx.posts.findFirst({ where: { id, deleted_at: null } });
         if (!post) throw new NotFoundException("Bài viết không tồn tại.");
+        if (post.approval_status !== "PUBLISHED" && post.user_id !== userId) {
+            throw new ForbiddenException("Bài viết chưa được duyệt hoặc không khả dụng.");
+        }
         if (post.user_id !== userId && post.privacy !== "public") {
             const friend = post.privacy === "friends" && await tx.friendships.findFirst({ where: { status: "accepted", OR: [
                 { requester_id: userId, addressee_id: post.user_id }, { requester_id: post.user_id, addressee_id: userId },
@@ -392,17 +398,74 @@ export class PostsService {
         validateMedia(files);
         if (input.keepMediaIds.length) throw new BadRequestException("Bài mới không được dùng media của bài khác.");
         if (!input.content && !files.length) throw new BadRequestException("Hãy nhập nội dung hoặc đính kèm media.");
+
+        let approvalStatus: "PUBLISHED" | "PENDING_APPROVAL" = "PUBLISHED";
+        if (input.groupId) {
+            const group = await this.prisma.groups.findUnique({
+                where: { id: input.groupId },
+                select: { id: true, requires_approval: true },
+            });
+            if (!group) throw new NotFoundException("Nhóm không tồn tại.");
+
+            const member = await this.prisma.group_members.findUnique({
+                where: { group_id_user_id: { group_id: input.groupId, user_id: userId } },
+                select: { role: true, status: true },
+            });
+            if (!member || member.status !== "JOINED") {
+                throw new ForbiddenException("Bạn phải là thành viên của nhóm để đăng bài.");
+            }
+
+            const isPrivileged = member.role === "OWNER" || member.role === "ADMIN" || member.role === "MODERATOR";
+            if (group.requires_approval && !isPrivileged) {
+                approvalStatus = "PENDING_APPROVAL";
+            }
+        }
+
         const uploaded = await this.upload(userId, files);
         let row: PostRow;
         try {
             row = await this.prisma.$transaction(async tx => {
-                const post = await tx.posts.create({ data: { user_id: userId, content: input.content, privacy: input.privacy }, include: postInclude });
-                if (uploaded.length) await tx.attachments.createMany({ data: uploaded.map(file => ({ owner_type: "post" as const, owner_id: post.id, file_url: file.key, file_type: file.type, file_name: file.name, file_size: BigInt(file.size) })) });
+                const post = await tx.posts.create({
+                    data: {
+                        user_id: userId,
+                        content: input.content,
+                        privacy: input.privacy,
+                        group_id: input.groupId ?? null,
+                        approval_status: approvalStatus,
+                    },
+                    include: postInclude,
+                });
+                if (uploaded.length) {
+                    await tx.attachments.createMany({
+                        data: uploaded.map(file => ({
+                            owner_type: "post" as const,
+                            owner_id: post.id,
+                            file_url: file.key,
+                            file_type: file.type,
+                            file_name: file.name,
+                            file_size: BigInt(file.size),
+                        })),
+                    });
+                }
                 return post;
             });
-        } catch (error) { await this.storage.remove(uploaded.map(file => file.key)); throw error; }
-        this.publishPostNotifications(userId, row.id, input.privacy);
-        return { success: true, post: (await this.serialize([row], userId))[0] };
+        } catch (error) {
+            await this.storage.remove(uploaded.map(file => file.key));
+            throw error;
+        }
+
+        if (approvalStatus === "PUBLISHED") {
+            this.publishPostNotifications(userId, row.id, input.privacy);
+        }
+
+        return {
+            success: true,
+            post: (await this.serialize([row], userId))[0],
+            status: approvalStatus,
+            message: approvalStatus === "PENDING_APPROVAL"
+                ? "Bài viết đã được gửi vào nhóm và đang chờ quản trị viên duyệt."
+                : undefined,
+        };
     }
     async update(userId: bigint, id: bigint, input: PostMutation, files: UploadedMedia[]) {
         await this.owned(userId, id);
@@ -441,5 +504,140 @@ export class PostsService {
         });
         await this.storage.remove(keys);
         return { success: true };
+    }
+
+    // ── Group posts ──────────────────────────────────────────────────────────
+
+    async listGroupPosts(userId: bigint, groupId: bigint, cursor?: bigint, limit = 20) {
+        const group = await this.prisma.groups.findUnique({
+            where: { id: groupId },
+            select: { id: true, privacy: true },
+        });
+        if (!group) throw new NotFoundException("Nhóm không tồn tại.");
+
+        if (group.privacy === "PRIVATE") {
+            const member = await this.prisma.group_members.findUnique({
+                where: { group_id_user_id: { group_id: groupId, user_id: userId } },
+                select: { status: true },
+            });
+            if (!member || member.status !== "JOINED") {
+                throw new ForbiddenException("Bạn không thể xem bài viết của nhóm riêng tư này.");
+            }
+        }
+
+        const takeLimit = Math.min(Math.max(limit, 1), 50);
+        const where: Prisma.postsWhereInput = {
+            group_id: groupId,
+            approval_status: "PUBLISHED",
+            deleted_at: null,
+            ...(cursor !== undefined ? { id: { lt: cursor } } : {}),
+        };
+        const orderBy: Prisma.postsOrderByWithRelationInput[] = [{ created_at: "desc" }, { id: "desc" }];
+
+        const rows = await this.prisma.posts.findMany({
+            where,
+            orderBy,
+            take: takeLimit + 1,
+            include: postInclude,
+        });
+
+        const hasMore = rows.length > takeLimit;
+        const pageRows = rows.slice(0, takeLimit);
+        const posts = await this.serialize(pageRows, userId);
+        const lastRow = pageRows[pageRows.length - 1];
+
+        return {
+            success: true,
+            posts,
+            nextCursor: hasMore && lastRow ? lastRow.id.toString() : null,
+        };
+    }
+
+    async listPendingPosts(userId: bigint, groupId: bigint, cursor?: bigint, limit = 20) {
+        const group = await this.prisma.groups.findUnique({
+            where: { id: groupId },
+            select: { id: true },
+        });
+        if (!group) throw new NotFoundException("Nhóm không tồn tại.");
+
+        const member = await this.prisma.group_members.findUnique({
+            where: { group_id_user_id: { group_id: groupId, user_id: userId } },
+            select: { role: true, status: true },
+        });
+        if (!member || member.status !== "JOINED" || (member.role !== "OWNER" && member.role !== "ADMIN" && member.role !== "MODERATOR")) {
+            throw new ForbiddenException("Chỉ quản trị viên hoặc kiểm duyệt viên mới có quyền xem bài viết chờ duyệt.");
+        }
+
+        const takeLimit = Math.min(Math.max(limit, 1), 50);
+        const where: Prisma.postsWhereInput = {
+            group_id: groupId,
+            approval_status: "PENDING_APPROVAL",
+            deleted_at: null,
+            ...(cursor !== undefined ? { id: { lt: cursor } } : {}),
+        };
+        const orderBy: Prisma.postsOrderByWithRelationInput[] = [{ created_at: "desc" }, { id: "desc" }];
+
+        const rows = await this.prisma.posts.findMany({
+            where,
+            orderBy,
+            take: takeLimit + 1,
+            include: postInclude,
+        });
+
+        const hasMore = rows.length > takeLimit;
+        const pageRows = rows.slice(0, takeLimit);
+        const posts = await this.serialize(pageRows, userId);
+        const lastPendingRow = pageRows[pageRows.length - 1];
+
+        return {
+            success: true,
+            posts,
+            nextCursor: hasMore && lastPendingRow ? lastPendingRow.id.toString() : null,
+        };
+    }
+
+    async approveGroupPost(userId: bigint, groupId: bigint, postId: bigint, action: "approve" | "reject") {
+        const group = await this.prisma.groups.findUnique({
+            where: { id: groupId },
+            select: { id: true },
+        });
+        if (!group) throw new NotFoundException("Nhóm không tồn tại.");
+
+        const member = await this.prisma.group_members.findUnique({
+            where: { group_id_user_id: { group_id: groupId, user_id: userId } },
+            select: { role: true, status: true },
+        });
+        if (!member || member.status !== "JOINED" || (member.role !== "OWNER" && member.role !== "ADMIN" && member.role !== "MODERATOR")) {
+            throw new ForbiddenException("Chỉ quản trị viên hoặc kiểm duyệt viên mới có quyền duyệt bài viết.");
+        }
+
+        const post = await this.prisma.posts.findFirst({
+            where: { id: postId, group_id: groupId, deleted_at: null },
+            include: postInclude,
+        });
+        if (!post) throw new NotFoundException("Bài viết không tồn tại trong nhóm này.");
+        if (post.approval_status !== "PENDING_APPROVAL") {
+            throw new BadRequestException("Bài viết không ở trạng thái chờ duyệt.");
+        }
+
+        const targetStatus = action === "approve" ? "PUBLISHED" : "REJECTED";
+        const updated = await this.prisma.posts.update({
+            where: { id: postId },
+            data: {
+                approval_status: targetStatus,
+                updated_at: new Date(),
+            },
+            include: postInclude,
+        });
+
+        if (targetStatus === "PUBLISHED") {
+            this.publishPostNotifications(updated.user_id, updated.id, updated.privacy);
+        }
+
+        return {
+            success: true,
+            message: action === "approve" ? "Đã duyệt bài viết thành công." : "Đã từ chối bài viết.",
+            post: (await this.serialize([updated], userId))[0],
+        };
     }
 }

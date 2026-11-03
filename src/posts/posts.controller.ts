@@ -4,10 +4,10 @@ import { AuthGuard } from "../auth/auth.guard.js";
 import type { AuthenticatedRequest } from "../auth/auth.types.js";
 import { PostsService } from "./posts.service.js";
 import { POST_LIMITS, type UploadedMedia, type GetPostsDto } from "./posts.types.js";
-import { parseId, parseMutation, parseComment, parseRepost, parsePostSort, parsePostPeriod, parsePostMediaOnly } from "./posts.validation.js";
+import { parseId, parseMutation, parseComment, parseRepost, parsePostSort, parsePostPeriod, parsePostMediaOnly, parseApproveAction } from "./posts.validation.js";
 
 const mediaInterceptor = FilesInterceptor("media", POST_LIMITS.files, {
-    limits: { files: POST_LIMITS.files, fileSize: POST_LIMITS.fileBytes, fields: 3, fieldSize: 24 * 1024, parts: 9 },
+    limits: { files: POST_LIMITS.files, fileSize: POST_LIMITS.fileBytes, fields: 4, fieldSize: 24 * 1024, parts: 9 },
 });
 
 @Controller("api/posts")
@@ -103,5 +103,61 @@ export class PostsController {
     @Delete(":id")
     remove(@Req() request: AuthenticatedRequest, @Param("id") id: string) {
         return this.posts.remove(request.userId!, parseId(id));
+    }
+}
+
+/**
+ * Controller dedicated to Group Post endpoints under `/api/groups`.
+ */
+@Controller("api/groups")
+@UseGuards(AuthGuard)
+export class GroupPostsController {
+    constructor(private readonly posts: PostsService) {}
+
+    /**
+     * GET /api/groups/:id/posts
+     * Lấy danh sách bài viết đã duyệt ('PUBLISHED') của nhóm (cursor pagination).
+     */
+    @Get(":id/posts")
+    listPosts(
+        @Req() request: AuthenticatedRequest,
+        @Param("id") id: string,
+        @Query("cursor") cursor: unknown,
+        @Query("limit") limit: unknown,
+    ) {
+        const parsedCursor = cursor === undefined ? undefined : parseId(cursor);
+        const parsedLimit = limit !== undefined && Number.isInteger(Number(limit)) ? Number(limit) : 20;
+        return this.posts.listGroupPosts(request.userId!, parseId(id), parsedCursor, parsedLimit);
+    }
+
+    /**
+     * GET /api/groups/:id/pending-posts
+     * Lấy danh sách bài viết đang chờ duyệt ('PENDING_APPROVAL') dành cho Admin/Moderator.
+     */
+    @Get(":id/pending-posts")
+    listPendingPosts(
+        @Req() request: AuthenticatedRequest,
+        @Param("id") id: string,
+        @Query("cursor") cursor: unknown,
+        @Query("limit") limit: unknown,
+    ) {
+        const parsedCursor = cursor === undefined ? undefined : parseId(cursor);
+        const parsedLimit = limit !== undefined && Number.isInteger(Number(limit)) ? Number(limit) : 20;
+        return this.posts.listPendingPosts(request.userId!, parseId(id), parsedCursor, parsedLimit);
+    }
+
+    /**
+     * PATCH /api/groups/:id/posts/:postId/approve
+     * Duyệt bài viết: body { action: 'approve' | 'reject' }
+     */
+    @Patch(":id/posts/:postId/approve")
+    approvePost(
+        @Req() request: AuthenticatedRequest,
+        @Param("id") id: string,
+        @Param("postId") postId: string,
+        @Body() body: unknown,
+    ) {
+        const action = parseApproveAction(body);
+        return this.posts.approveGroupPost(request.userId!, parseId(id), parseId(postId), action);
     }
 }
