@@ -8,6 +8,7 @@ export interface PostMutation {
     content: string;
     privacy: "public" | "friends" | "private";
     keepMediaIds: bigint[];
+    groupId?: bigint;
 }
 export interface StoredMedia {
     key: string;
@@ -28,6 +29,12 @@ export interface PostView {
     liked: boolean; likes: number; saved: boolean; comments: number;
     media: { id: string; url: string; type: string; name: string; size: number }[];
     isRepost: boolean; original: PostView | null;
+    groupId?: string | null;
+    approvalStatus?: "PUBLISHED" | "PENDING_APPROVAL" | "REJECTED";
+}
+
+export interface ApprovePostDto {
+    action: "approve" | "reject";
 }
 
 export type PostSort = "relevance" | "latest";

@@ -4,6 +4,7 @@ import { Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { AuthModule } from "./auth/auth.module.js";
 import { FriendsModule } from "./friends/friends.module.js";
+import { GroupsModule } from "./groups/groups.module.js";
 import { Neo4jModule } from "./neo4j/neo4j.module.js";
 import { NotificationsModule } from "./notifications/notifications.module.js";
 import { PrismaModule } from "./prisma/prisma.module.js";
@@ -24,6 +25,7 @@ import { SearchModule } from "./search/search.module.js";
         UsersModule,
         AuthModule,
         FriendsModule,
+        GroupsModule,
         NotificationsModule,
         PostsModule,
         ProfileModule,
