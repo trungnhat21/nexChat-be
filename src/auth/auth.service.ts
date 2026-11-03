@@ -122,6 +122,39 @@ export class AuthService {
         });
     }
 
+    async socialLoginOrRegister(
+        email: string,
+        firstName: string,
+        lastName: string,
+        avatar?: string,
+    ) {
+        let existingUser = await this.usersService.getUserByEmail(email);
+
+        if (!existingUser) {
+            const randomPassword = crypto.randomBytes(16).toString("hex");
+            const passwordHash = await this.hashPassword(randomPassword);
+            const rawHandle = email.split("@")[0] || "user";
+            const baseHandle = rawHandle.toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 30);
+            const created = await this.usersService.createUser(
+                email,
+                passwordHash,
+                firstName || "User",
+                lastName || "",
+                baseHandle,
+            );
+            existingUser = await this.usersService.getUserByEmail(created.email);
+        }
+
+        if (!existingUser) {
+            throw new AuthFlowError("USER_NOT_FOUND");
+        }
+
+        const session = await this.createSession(existingUser);
+        return {
+            ...session,
+        };
+    }
+
     async register(
         email: string,
         password: string,

@@ -40,6 +40,45 @@ interface VerifyTwoFactorBody {
 export class AuthController {
     constructor(private readonly authService: AuthService) {}
 
+        @Public()
+    @Post("social-login")
+    async socialLogin(
+        @Body() body: { email?: string; firstName?: string; lastName?: string; avatar?: string; provider?: string },
+        @Res() response: Response,
+    ): Promise<Response> {
+        try {
+            const { email, firstName, lastName, avatar } = body;
+            if (!email) {
+                return response.status(400).json({
+                    success: false,
+                    message: "Email is required",
+                });
+            }
+
+            const result = await this.authService.socialLoginOrRegister(
+                email,
+                firstName || "User",
+                lastName || "",
+                avatar,
+            );
+
+            this.setRefreshTokenCookie(response, result.refreshToken);
+
+            return response.status(200).json({
+                success: true,
+                message: "Social login successfully",
+                accessToken: result.accessToken,
+                currentUser: result.currentUser,
+            });
+        } catch (error) {
+            console.error("Social login error:", error);
+            return response.status(500).json({
+                success: false,
+                message: "Internal server error",
+            });
+        }
+    }
+
     @Public()
     @Post("register")
     async register(
