@@ -14,8 +14,10 @@ import { MessagingModule } from "./messaging/messaging.module.js";
 import { StoriesModule } from "./stories/stories.module.js";
 import { CallsModule } from "./calls/calls.module.js";
 import { SearchModule } from "./search/search.module.js";
+import { HealthController } from "./health/health.controller.js";
 
 @Module({
+    controllers: [HealthController],
     imports: [
         ConfigModule.forRoot({
             isGlobal: true,

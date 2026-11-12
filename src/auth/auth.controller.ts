@@ -363,7 +363,13 @@ export class AuthController {
             await this.authService.logout(refreshToken);
         }
 
-        response.clearCookie("refreshToken");
+        const isProduction = process.env.NODE_ENV === "production";
+        response.clearCookie("refreshToken", {
+            httpOnly: true,
+            secure: isProduction,
+            sameSite: isProduction ? "none" : "lax",
+            path: "/",
+        });
 
         return response.status(200).json({
             success: true,
@@ -375,7 +381,8 @@ export class AuthController {
         response.cookie("refreshToken", refreshToken, {
             httpOnly: true,
             secure: process.env.NODE_ENV === "production",
-            sameSite: "lax",
+            sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+            path: "/",
             maxAge: 7 * 24 * 60 * 60 * 1000,
         });
     }

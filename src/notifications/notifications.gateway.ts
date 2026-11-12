@@ -5,13 +5,25 @@ import { AuthService } from "../auth/auth.service.js";
 import type { JwtPayload } from "../auth/auth.types.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { verifyAccessToken } from "../utils/token.js";
+import { isOriginAllowed } from "../utils/cors.js";
 
 const HEARTBEAT_TTL_MS = 75_000;
 const TYPING_TTL_MS = 5_000;
 const CALL_EVENT_DEDUPE_TTL_MS = 10 * 60_000;
 type CallEventAction = "accepted" | "declined" | "cancelled" | "ended";
 
-@WebSocketGateway({ cors: { origin: true, credentials: true } })
+@WebSocketGateway({
+    cors: {
+        origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+            if (isOriginAllowed(origin)) {
+                callback(null, true);
+            } else {
+                callback(new Error(`WebSocket origin ${origin} not allowed by CORS`));
+            }
+        },
+        credentials: true,
+    },
+})
 @Injectable()
 export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnModuleDestroy {
     @WebSocketServer() private server!: Server;
