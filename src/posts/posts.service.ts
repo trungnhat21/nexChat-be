@@ -10,6 +10,7 @@ import { getPeriodStartDate, type SearchFilterOptions } from "../search/search.v
 const postInclude = {
     users: { select: { id: true, first_name: true, last_name: true, user_name: true, avatar: true, profiles: { select: { display_name: true, avatar_url: true } } } },
     _count: { select: { comments: { where: { deleted_at: null } } } },
+    groups: { select: { id: true, name: true, avatar: true, privacy: true } },
 } satisfies Prisma.postsInclude;
 type PostRow = Prisma.postsGetPayload<{ include: typeof postInclude }>;
 
@@ -260,6 +261,12 @@ export class PostsService {
                 type: file.file_type ?? "application/octet-stream", name: file.file_name ?? "media", size: Number(file.file_size ?? 0),
             }))),
             groupId: row.group_id ? row.group_id.toString() : null,
+            group: row.groups ? {
+                id: row.groups.id.toString(),
+                name: row.groups.name,
+                avatar: row.groups.avatar,
+                privacy: row.groups.privacy,
+            } : null,
             approvalStatus: row.approval_status,
         })));
     }

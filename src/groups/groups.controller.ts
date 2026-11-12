@@ -143,6 +143,21 @@ export class GroupsController {
         }
     }
 
+    
+    // GET /api/groups/notification-count — Số lượng thông báo / việc cần xử lý từ nhóm
+    @Get("notification-count")
+    async getNotificationCount(
+        @Req() req: AuthenticatedRequest,
+        @Res() res: Response,
+    ): Promise<Response> {
+        try {
+            const count = await this.groupsService.getGroupNotificationCount(req.userId!);
+            return res.status(200).json({ success: true, count });
+        } catch (error) {
+            return handleGroupError(error, res);
+        }
+    }
+
     // GET /api/groups/:id — Chi tiết nhóm
     @Get(":id")
     async findOne(

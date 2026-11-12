@@ -235,6 +235,50 @@ export class GroupsService {
         };
     }
 
+    
+    // ── Group Notification Count ──────────────────────────────────────────────
+
+    async getGroupNotificationCount(userId: bigint): Promise<number> {
+        const memberships = await this.prisma.group_members.findMany({
+            where: {
+                user_id: userId,
+                status: "JOINED",
+                role: { in: ["OWNER", "ADMIN", "MODERATOR"] },
+            },
+            select: { group_id: true, role: true },
+        });
+
+        if (!memberships.length) return 0;
+
+        const adminGroupIds = memberships
+            .filter((m) => m.role === "OWNER" || m.role === "ADMIN")
+            .map((m) => m.group_id);
+
+        const modGroupIds = memberships.map((m) => m.group_id);
+
+        const [pendingMembersCount, pendingPostsCount] = await Promise.all([
+            adminGroupIds.length
+                ? this.prisma.group_members.count({
+                      where: {
+                          group_id: { in: adminGroupIds },
+                          status: "PENDING",
+                      },
+                  })
+                : 0,
+            modGroupIds.length
+                ? this.prisma.posts.count({
+                      where: {
+                          group_id: { in: modGroupIds },
+                          approval_status: "PENDING_APPROVAL",
+                          deleted_at: null,
+                      },
+                  })
+                : 0,
+        ]);
+
+        return pendingMembersCount + pendingPostsCount;
+    }
+
     // ── Get by ID ─────────────────────────────────────────────────────────────
 
     async getGroup(userId: bigint, groupId: bigint) {
