@@ -10,7 +10,7 @@ import { createAccessToken } from "../dist/utils/token.js";
 import { PostsController } from "../dist/posts/posts.controller.js";
 import { PostsService } from "../dist/posts/posts.service.js";
 import { PostStorageService } from "../dist/posts/post-storage.service.js";
-import { parseId, parseMutation, validateMedia } from "../dist/posts/posts.validation.js";
+import { buildFeedRandomizationPlan, encodeFeedRandomizationCursor, encodeFeedRandomizationSession, parseFeedRandomizationCursor, parseFeedRandomizationSession, parseId, parseMutation, parsePostRandomize, validateMedia } from "../dist/posts/posts.validation.js";
 import { PrismaService } from "../dist/prisma/prisma.service.js";
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=", "base64");
@@ -31,6 +31,21 @@ test("validates binary signatures, empty files and per-file/combined upload limi
     assert.throws(() => validateMedia([{...file,size:26*1024*1024}]), BadRequestException);
     assert.throws(() => validateMedia(Array(3).fill({...file,size:20*1024*1024})), BadRequestException);
 });
+
+test("validates deterministic randomized-feed sessions and cursors", () => {
+    const seed = "0123456789abcdef0123456789abcdef";
+    const session = { version: 1, seed, snapshotId: "123" };
+    const cursor = { version: 1, seed, segment: 3, lastId: "42" };
+    assert.deepEqual(parseFeedRandomizationSession(encodeFeedRandomizationSession(session)), session);
+    assert.deepEqual(parseFeedRandomizationCursor(encodeFeedRandomizationCursor(cursor)), cursor);
+    assert.deepEqual(buildFeedRandomizationPlan(seed), buildFeedRandomizationPlan(seed), "same seed has same segment order and direction");
+    assert.equal(new Set(buildFeedRandomizationPlan(seed).segments).size, 8);
+    assert.throws(() => parseFeedRandomizationSession("not-a-session"));
+    assert.throws(() => parseFeedRandomizationCursor(Buffer.from(JSON.stringify({ version: 1, seed, segment: 8, lastId: "42" })).toString("base64url")));
+    assert.equal(parsePostRandomize("true"), true);
+    assert.equal(parsePostRandomize(undefined), false);
+    assert.throws(() => parsePostRandomize("maybe"));
+});
 test("checks ownership before uploads and cleans files after partial upload or database failure", async () => {
     let uploads = 0; const removed = [];
     const storage = { upload: async () => { uploads++; return {key:"test-key",name:"pixel.png",size:png.length,type:"image/png"}; }, remove: async keys => removed.push(...keys) };
@@ -49,7 +64,8 @@ test("checks ownership before uploads and cleans files after partial upload or d
 
 test("HTTP guard, multipart parsing and body validation work together", async () => {
     const calls=[];
-    const service={create:async(userId,body,files)=>{validateMedia(files);calls.push({userId,body,files});return {success:true,post:{id:"1"}};},list:async()=>({success:true,posts:[],nextCursor:null}),update:async()=>({success:true}),remove:async()=>({success:true})};
+    const listCalls=[];
+    const service={create:async(userId,body,files)=>{validateMedia(files);calls.push({userId,body,files});return {success:true,post:{id:"1"}};},list:async(userId,dto)=>{listCalls.push({userId,dto});return {success:true,posts:[],nextCursor:null};},update:async()=>({success:true}),remove:async()=>({success:true})};
     const session={getSessionCurrentUser:async(sessionId,userId)=>sessionId==="posts-test"&&userId===1n?{id:"1"}:null};
     class TestModule {}
     Module({controllers:[PostsController],providers:[AuthGuard,{provide:AuthService,useValue:session},{provide:PostsService,useValue:service}]})(TestModule);
@@ -64,6 +80,17 @@ test("HTTP guard, multipart parsing and body validation work together", async ()
         assert.equal(result.status,201);assert.equal(calls[0].userId,1n);assert.equal(calls[0].body.content,"Hello");assert.equal(calls[0].files[0].buffer.length,png.length);
         assert.equal((await fetch(base+"/api/posts/not-an-id",{method:"DELETE",headers:{Authorization:"Bearer "+token}})).status,400);
         assert.equal((await fetch(base+"/api/posts?authorId=invalid",{headers:{Authorization:"Bearer "+token}})).status,400);
+        assert.equal((await fetch(base+"/api/posts?randomize=true&search=hello",{headers:{Authorization:"Bearer "+token}})).status,400,"relevance searches keep their existing ordering");
+        const randomized=await fetch(base+"/api/posts?randomize=true",{headers:{Authorization:"Bearer "+token}});
+        assert.equal(randomized.status,200);assert.equal(listCalls.at(-1).userId,1n);assert.equal(listCalls.at(-1).dto.randomize,true);
+        const seed="0123456789abcdef0123456789abcdef";
+        const feedSession=encodeFeedRandomizationSession({version:1,seed,snapshotId:"99"});
+        const feedCursor=encodeFeedRandomizationCursor({version:1,seed,segment:2,lastId:"42"});
+        assert.equal((await fetch(base+`/api/posts?randomize=true&feedSession=${feedSession}&cursor=${feedCursor}`,{headers:{Authorization:"Bearer "+token}})).status,200);
+        assert.equal(listCalls.at(-1).dto.randomCursor.lastId,"42");
+        const otherSeed="fedcba9876543210fedcba9876543210";
+        const mismatchedCursor=encodeFeedRandomizationCursor({version:1,seed:otherSeed,segment:2,lastId:"42"});
+        assert.equal((await fetch(base+`/api/posts?randomize=true&feedSession=${feedSession}&cursor=${mismatchedCursor}`,{headers:{Authorization:"Bearer "+token}})).status,400,"cursor cannot be replayed with another feed session");
         const invalid=new FormData();invalid.set("content","x");invalid.append("media",new Blob(["not png"],{type:"image/png"}),"fake.png");
         assert.equal((await fetch(base+"/api/posts",{method:"POST",headers:{Authorization:"Bearer "+token},body:invalid})).status,400);
         const maximum=new FormData();maximum.set("content","x");maximum.set("privacy","public");maximum.set("keepMediaIds","[]");for(let i=0;i<5;i++)maximum.append("media",new Blob([png],{type:"image/png"}),"pixel.png");
@@ -118,6 +145,55 @@ test("real database: CRUD, privacy, search, pagination and attachment ownership;
             const profilePage1=await service.list(user1.id,undefined,marker,user1.id);
             const profilePage2=await service.list(user1.id,BigInt(profilePage1.nextCursor),marker,user1.id);
             assert.equal(profilePage1.total,23);assert.equal(profilePage2.total,23);assert.equal(profilePage2.posts.length,3);
+
+            const videoFixture=await tx.posts.findFirst({where:{user_id:user1.id,content:marker+" page 0"},select:{id:true}});
+            await tx.attachments.create({data:{owner_type:"post",owner_id:videoFixture.id,file_url:"posts/1/test-video.mp4",file_type:"video/mp4",file_name:"test-video.mp4",file_size:12n}});
+            const randomizedFirst=await service.list(user1.id,{authorId:user1.id,randomize:true});
+            assert.equal(randomizedFirst.posts.length,20);assert.ok(randomizedFirst.feedSession);assert.ok(randomizedFirst.nextCursor);
+            const session=parseFeedRandomizationSession(randomizedFirst.feedSession);
+            const baseRows=await tx.posts.findMany({where:{user_id:user1.id,deleted_at:null,approval_status:"PUBLISHED"},select:{id:true}});
+            const baseIds=baseRows.map(row=>row.id);
+            const late=await tx.posts.create({data:{user_id:user1.id,content:marker+" newly created",privacy:"private"}});
+            const repeatedFirst=await service.list(user1.id,{authorId:user1.id,randomize:true,feedSession:session});
+            assert.deepEqual(repeatedFirst.posts.map(post=>post.id),randomizedFirst.posts.map(post=>post.id),"same session keeps its first page stable after a new post is created");
+            async function collectRandomized(first, feedSession) {
+                const collected=[...first.posts];let current=first;
+                while(current.nextCursor){
+                    current=await service.list(user1.id,{authorId:user1.id,randomize:true,feedSession,randomCursor:parseFeedRandomizationCursor(current.nextCursor)});
+                    collected.push(...current.posts);
+                }
+                return collected;
+            }
+            const randomizedAll=await collectRandomized(randomizedFirst,session);
+            assert.equal(randomizedAll.length,baseIds.length,"all posts in the session snapshot are returned");
+            assert.equal(new Set(randomizedAll.map(post=>post.id)).size,randomizedAll.length,"pagination has no duplicate posts");
+            assert.deepEqual(new Set(randomizedAll.map(post=>post.id)),new Set(baseIds.map(String)),"pagination skips no eligible posts");
+            assert.ok(!randomizedAll.some(post=>post.id===late.id.toString()),"posts created after the session snapshot are reserved for a fresh feed");
+            const mediaTypes=new Set(randomizedAll.flatMap(post=>post.media.map(media=>media.type)));
+            assert.ok(mediaTypes.has("image/png"));assert.ok(mediaTypes.has("video/mp4"));
+            const mediaOnly=await service.list(user1.id,{authorId:user1.id,randomize:true,mediaOnly:true});
+            assert.ok(mediaOnly.posts.length>0);assert.ok(mediaOnly.posts.every(post=>post.media.length>0),"media-only filter is preserved");
+
+            const snapshot=BigInt(session.snapshotId);
+            const sequenceForSeed=seed=>{
+                const plan=buildFeedRandomizationPlan(seed);
+                return plan.segments.flatMap((bucket,index)=>{
+                    const lower=(snapshot*BigInt(bucket))/8n+1n;const upper=(snapshot*BigInt(bucket+1))/8n;
+                    return baseIds.filter(postId=>postId>=lower&&postId<=upper).sort((a,b)=>plan.directions[index]==="asc"?(a<b?-1:a>b?1:0):(a>b?-1:a<b?1:0)).map(String);
+                }).join(",");
+            };
+            const seedA="00000000000000000000000000000001";const expectedA=sequenceForSeed(seedA);
+            let seedB;for(let candidate=2;candidate<1000;candidate++){const seed=candidate.toString(16).padStart(32,"0");if(sequenceForSeed(seed)!==expectedA){seedB=seed;break;}}
+            assert.ok(seedB,"fixtures span enough buckets for a second deterministic order");
+            const seededA={version:1,seed:seedA,snapshotId:session.snapshotId};const seededB={version:1,seed:seedB,snapshotId:session.snapshotId};
+            const orderA=await collectRandomized(await service.list(user1.id,{authorId:user1.id,randomize:true,feedSession:seededA}),seededA);
+            const orderB=await collectRandomized(await service.list(user1.id,{authorId:user1.id,randomize:true,feedSession:seededB}),seededB);
+            assert.deepEqual(orderA.map(post=>post.id).join(","),expectedA,"database pages follow the deterministic seeded segment order");
+            assert.notDeepEqual(orderA.map(post=>post.id),orderB.map(post=>post.id),"a different seed changes ordering");
+            const refreshed=await service.list(user1.id,{authorId:user1.id,randomize:true});
+            assert.notEqual(refreshed.feedSession,randomizedFirst.feedSession,"a fresh refresh receives a new session seed");
+            const refreshedAll=await collectRandomized(refreshed,parseFeedRandomizationSession(refreshed.feedSession));
+            assert.ok(refreshedAll.some(post=>post.id===late.id.toString()),"a new post appears in a new feed session");
             await service.remove(user1.id,id);
             assert.ok((await tx.posts.findUnique({where:{id}})).deleted_at);
             assert.equal(await tx.attachments.count({where:{owner_type:"post",owner_id:id}}),0);

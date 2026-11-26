@@ -4,7 +4,7 @@ import { AuthGuard } from "../auth/auth.guard.js";
 import type { AuthenticatedRequest } from "../auth/auth.types.js";
 import { PostsService } from "./posts.service.js";
 import { POST_LIMITS, type UploadedMedia, type GetPostsDto } from "./posts.types.js";
-import { parseId, parseMutation, parseComment, parseRepost, parsePostSort, parsePostPeriod, parsePostMediaOnly, parseApproveAction } from "./posts.validation.js";
+import { parseId, parseMutation, parseComment, parseRepost, parsePostSort, parsePostPeriod, parsePostMediaOnly, parseApproveAction, parseFeedRandomizationCursor, parseFeedRandomizationSession, parsePostRandomize } from "./posts.validation.js";
 
 const mediaInterceptor = FilesInterceptor("media", POST_LIMITS.files, {
     limits: { files: POST_LIMITS.files, fileSize: POST_LIMITS.fileBytes, fields: 4, fieldSize: 24 * 1024, parts: 9 },
@@ -23,13 +23,25 @@ export class PostsController {
         @Query("sort") sort: unknown,
         @Query("period") period: unknown,
         @Query("mediaOnly") mediaOnly: unknown,
+        @Query("randomize") randomizeValue: unknown,
+        @Query("feedSession") feedSessionValue: unknown,
     ) {
         if (search !== undefined && (typeof search !== "string" || search.length > 200)) throw new BadRequestException("Tìm kiếm tối đa 200 ký tự.");
         const searchQuery = typeof search === "string" ? search.trim() : "";
+        const randomize = parsePostRandomize(randomizeValue);
+        const parsedAuthorId = authorId === undefined ? undefined : parseId(authorId);
+        if (randomize && searchQuery) throw new BadRequestException("Randomized feed sessions are unavailable for relevance searches.");
+        const feedSession = feedSessionValue === undefined ? undefined : parseFeedRandomizationSession(feedSessionValue);
+        const randomCursor = randomize && cursor !== undefined ? parseFeedRandomizationCursor(cursor) : undefined;
+        if (randomize && cursor !== undefined && !feedSession) throw new BadRequestException("Feed session is required with a randomized cursor.");
+        if (randomize && randomCursor && feedSession && randomCursor.seed !== feedSession.seed) throw new BadRequestException("Feed cursor does not match its session.");
+        if (randomize && randomCursor && feedSession && BigInt(randomCursor.lastId) > BigInt(feedSession.snapshotId)) throw new BadRequestException("Feed cursor is newer than its snapshot.");
+        if (!randomize && feedSessionValue !== undefined) throw new BadRequestException("feedSession requires randomize=true.");
         const dto: GetPostsDto = {
-            ...(cursor === undefined ? {} : { cursor: parseId(cursor) }),
+            ...(!randomize && cursor !== undefined ? { cursor: parseId(cursor) } : {}),
+            ...(randomize ? { randomize: true, ...(feedSession ? { feedSession } : {}), ...(randomCursor ? { randomCursor } : {}) } : {}),
             search: searchQuery,
-            ...(authorId === undefined ? {} : { authorId: parseId(authorId) }),
+            ...(parsedAuthorId === undefined ? {} : { authorId: parsedAuthorId }),
             sort: parsePostSort(sort, Boolean(searchQuery)),
             period: parsePostPeriod(period),
             mediaOnly: parsePostMediaOnly(mediaOnly),

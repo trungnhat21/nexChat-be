@@ -6,3 +6,4 @@ prisma.config.js
 prisma.config.js.map
 /docs/
 /tests/
+/scripts/.bulk-test-posts-state/
