@@ -42,10 +42,26 @@ export type PostPeriod = "all" | "24h" | "week" | "month";
 
 export interface GetPostsDto {
     cursor?: bigint | undefined;
+    randomize?: boolean | undefined;
+    feedSession?: FeedRandomizationSession | undefined;
+    randomCursor?: FeedRandomizationCursor | undefined;
     search?: string | undefined;
     authorId?: bigint | undefined;
     savedOnly?: boolean | undefined;
     sort?: PostSort | undefined;
     period?: PostPeriod | undefined;
     mediaOnly?: boolean | undefined;
+}
+
+export interface FeedRandomizationSession {
+    version: 1;
+    seed: string;
+    snapshotId: string;
+}
+
+export interface FeedRandomizationCursor {
+    version: 1;
+    seed: string;
+    segment: number;
+    lastId: string;
 }

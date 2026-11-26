@@ -1,9 +1,10 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { randomBytes } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { PostStorageService } from "./post-storage.service.js";
-import { POST_LIMITS, type PostView, type PostMutation, type StoredMedia, type UploadedMedia, type GetPostsDto, type PostSort, type PostPeriod } from "./posts.types.js";
-import { validateMedia } from "./posts.validation.js";
+import { POST_LIMITS, type PostView, type PostMutation, type StoredMedia, type UploadedMedia, type GetPostsDto, type PostSort, type PostPeriod, type FeedRandomizationSession } from "./posts.types.js";
+import { buildFeedRandomizationPlan, encodeFeedRandomizationCursor, encodeFeedRandomizationSession, validateMedia } from "./posts.validation.js";
 import { NotificationsService } from "../notifications/notifications.service.js";
 import { getPeriodStartDate, type SearchFilterOptions } from "../search/search.validation.js";
 
@@ -120,9 +121,11 @@ export class PostsService {
             });
             const postIdsWithMedia = postAttachments.map(a => a.owner_id);
             where.id = { in: postIdsWithMedia, ...(cursor !== undefined ? { lt: cursor } : {}) };
-        } else if (cursor !== undefined) {
+        } else if (cursor !== undefined && !dto.randomize) {
             where.id = { lt: cursor };
         }
+
+        if (dto.randomize && !search && !savedOnly) return this.listRandomized(userId, where, dto.feedSession, dto.randomCursor);
 
         const countWhere = { ...where };
         const orderBy: Prisma.postsOrderByWithRelationInput[] = [{ created_at: "desc" }, { id: "desc" }];
@@ -150,6 +153,65 @@ export class PostsService {
             posts,
             nextCursor: hasMore ? (rows[19]?.id ? rows[19].id.toString() : null) : null,
             ...(author ? { total, author: { id: author.id.toString(), name: author.profiles?.display_name || [author.last_name, author.first_name].filter(Boolean).join(" ") || author.user_name || "User", handle: author.user_name, avatar: await this.profileImage(author.profiles?.avatar_url || author.avatar), cover: await this.profileImage(author.profiles?.cover_url ?? null), bio: author.profiles?.bio ?? null, createdAt: author.created_at.toISOString() } } : {}),
+        };
+    }
+
+    private async listRandomized(
+        userId: bigint,
+        where: Prisma.postsWhereInput,
+        suppliedSession?: FeedRandomizationSession,
+        cursor?: GetPostsDto["randomCursor"],
+    ) {
+        if (cursor && !suppliedSession) throw new BadRequestException("Feed session is required with a randomized cursor.");
+        if (cursor && suppliedSession && cursor.seed !== suppliedSession.seed) throw new BadRequestException("Feed cursor does not match its session.");
+        if (cursor && suppliedSession && BigInt(cursor.lastId) > BigInt(suppliedSession.snapshotId)) throw new BadRequestException("Feed cursor is newer than its snapshot.");
+
+        const snapshotValue = suppliedSession?.snapshotId ?? (await this.prisma.posts.aggregate({ _max: { id: true } }))._max.id?.toString() ?? "0";
+        const session: FeedRandomizationSession = suppliedSession ?? {
+            version: 1,
+            seed: randomBytes(16).toString("hex"),
+            snapshotId: snapshotValue,
+        };
+        const snapshotId = BigInt(session.snapshotId);
+        const plan = buildFeedRandomizationPlan(session.seed);
+        const existingId = where.id;
+        const existingIdFilter = existingId && typeof existingId === "object" ? existingId : existingId === undefined ? {} : { equals: existingId };
+        type RandomizedRow = { row: PostRow; segment: number };
+        const page: RandomizedRow[] = [];
+        const target = 21;
+        const firstSegment = cursor?.segment ?? 0;
+
+        for (let segment = firstSegment; segment < plan.segments.length && page.length < target; segment += 1) {
+            const bucket = plan.segments[segment];
+            const direction = plan.directions[segment];
+            if (bucket === undefined || direction === undefined) continue;
+            const lower = (snapshotId * BigInt(bucket)) / 8n + 1n;
+            const upper = (snapshotId * BigInt(bucket + 1)) / 8n;
+            if (lower > upper) continue;
+            const idRange: Prisma.postsWhereInput["id"] = {
+                ...(existingIdFilter as object),
+                gte: lower,
+                lte: upper,
+                ...(segment === firstSegment && cursor ? direction === "asc" ? { gt: BigInt(cursor.lastId) } : { lt: BigInt(cursor.lastId) } : {}),
+            };
+            const rows = await this.prisma.posts.findMany({
+                where: { ...where, id: idRange },
+                orderBy: { id: direction },
+                take: target - page.length,
+                include: postInclude,
+            });
+            page.push(...rows.map(row => ({ row, segment })));
+        }
+
+        const hasMore = page.length > 20;
+        const pageRows = page.slice(0, 20);
+        const posts = await this.serialize(pageRows.map(item => item.row), userId);
+        const last = pageRows.at(-1);
+        return {
+            success: true,
+            posts,
+            feedSession: encodeFeedRandomizationSession(session),
+            nextCursor: hasMore && last ? encodeFeedRandomizationCursor({ version: 1, seed: session.seed, segment: last.segment, lastId: last.row.id.toString() }) : null,
         };
     }
 

@@ -1,6 +1,6 @@
 import { BadRequestException } from "@nestjs/common";
 import { basename } from "node:path";
-import { POST_LIMITS, type PostMutation, type UploadedMedia } from "./posts.types.js";
+import { POST_LIMITS, type FeedRandomizationCursor, type FeedRandomizationSession, type PostMutation, type UploadedMedia } from "./posts.types.js";
 
 export function parseId(value: unknown): bigint {
     const text = typeof value === "string" ? value : typeof value === "number" && Number.isSafeInteger(value) ? String(value) : "";
@@ -87,6 +87,76 @@ export function parsePostPeriod(value: unknown): "all" | "24h" | "week" | "month
 export function parsePostMediaOnly(value: unknown): boolean {
     if (value === true || value === "true" || value === "1" || value === 1) return true;
     return false;
+}
+
+function decodeFeedToken(value: unknown): Record<string, unknown> {
+    if (typeof value !== "string" || value.length > 256 || !/^[A-Za-z0-9_-]+$/.test(value)) throw new BadRequestException("Phiên bảng tin không hợp lệ.");
+    try {
+        const decoded: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+        if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) throw new Error("invalid token body");
+        return decoded as Record<string, unknown>;
+    } catch { throw new BadRequestException("Phiên bảng tin không hợp lệ."); }
+}
+
+export function encodeFeedRandomizationSession(session: FeedRandomizationSession): string {
+    return Buffer.from(JSON.stringify(session)).toString("base64url");
+}
+
+export function parseFeedRandomizationSession(value: unknown): FeedRandomizationSession {
+    const token = decodeFeedToken(value);
+    if (token.version !== 1 || typeof token.seed !== "string" || !/^[a-f0-9]{32}$/.test(token.seed)
+        || typeof token.snapshotId !== "string" || !/^(0|[1-9]\d{0,19})$/.test(token.snapshotId)) {
+        throw new BadRequestException("Phiên bảng tin không hợp lệ.");
+    }
+    const snapshotId = BigInt(token.snapshotId);
+    if (snapshotId > 18446744073709551615n) throw new BadRequestException("Phiên bảng tin không hợp lệ.");
+    return { version: 1, seed: token.seed, snapshotId: snapshotId.toString() };
+}
+
+export function encodeFeedRandomizationCursor(cursor: FeedRandomizationCursor): string {
+    return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+export function parseFeedRandomizationCursor(value: unknown): FeedRandomizationCursor {
+    const token = decodeFeedToken(value);
+    if (token.version !== 1 || typeof token.seed !== "string" || !/^[a-f0-9]{32}$/.test(token.seed)
+        || !Number.isInteger(token.segment) || Number(token.segment) < 0 || Number(token.segment) >= 8
+        || typeof token.lastId !== "string" || !/^[1-9]\d{0,19}$/.test(token.lastId)) {
+        throw new BadRequestException("Con trỏ bảng tin không hợp lệ.");
+    }
+    if (BigInt(token.lastId) > 18446744073709551615n) throw new BadRequestException("Con trỏ bảng tin không hợp lệ.");
+    return { version: 1, seed: token.seed, segment: Number(token.segment), lastId: BigInt(token.lastId).toString() };
+}
+
+export function parsePostRandomize(value: unknown): boolean {
+    if (value === undefined || value === false || value === "false" || value === "0") return false;
+    if (value === true || value === "true" || value === "1") return true;
+    throw new BadRequestException("Tham số randomize không hợp lệ.");
+}
+
+export function buildFeedRandomizationPlan(seed: string): { segments: number[]; directions: Array<"asc" | "desc"> } {
+    if (!/^[a-f0-9]{32}$/.test(seed)) throw new BadRequestException("Seed bảng tin không hợp lệ.");
+    const mask = (1n << 64n) - 1n;
+    const seedValue = BigInt(`0x${seed}`);
+    let state = ((seedValue >> 64n) ^ (seedValue & mask)) & mask;
+    if (state === 0n) state = 0x9e3779b97f4a7c15n;
+    const next = () => {
+        state ^= state >> 12n;
+        state ^= (state << 25n) & mask;
+        state ^= state >> 27n;
+        state = (state * 0x2545f4914f6cdd1dn) & mask;
+        return state;
+    };
+    const segments = Array.from({ length: 8 }, (_, index) => index);
+    for (let index = segments.length - 1; index > 0; index -= 1) {
+        const swapIndex = Number(next() % BigInt(index + 1));
+        const current = segments[index]!;
+        const swapped = segments[swapIndex]!;
+        segments[index] = swapped;
+        segments[swapIndex] = current;
+    }
+    const directions = segments.map(() => next() & 1n ? "desc" : "asc");
+    return { segments, directions };
 }
 
 export function parseApproveAction(raw: unknown): "approve" | "reject" {
