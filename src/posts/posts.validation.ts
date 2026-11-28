@@ -16,6 +16,7 @@ export function parseMutation(raw: unknown, requireMediaState = false): PostMuta
     if (typeof body.content !== "string" || body.content.length > POST_LIMITS.contentLength) throw new BadRequestException("Nội dung tối đa 5.000 ký tự.");
     if (requireMediaState && (body.privacy === undefined || body.keepMediaIds === undefined)) throw new BadRequestException("privacy and keepMediaIds are required when editing a post.");
     const privacy = body.privacy ?? "public";
+    if (body.postType !== undefined && body.postType !== "post" && body.postType !== "video") throw new BadRequestException("Invalid post type.");
     if (privacy !== "public" && privacy !== "friends" && privacy !== "private") throw new BadRequestException("Quyền riêng tư không hợp lệ.");
     let ids: unknown = [];
     try { ids = body.keepMediaIds === undefined ? [] : typeof body.keepMediaIds === "string" ? JSON.parse(body.keepMediaIds) : body.keepMediaIds; }
@@ -33,8 +34,15 @@ export function parseMutation(raw: unknown, requireMediaState = false): PostMuta
         content: body.content.trim(),
         privacy,
         keepMediaIds,
+        ...(body.postType === undefined ? {} : { postType: body.postType as "post" | "video" }),
         ...(groupId !== undefined ? { groupId } : {}),
     };
+}
+
+export function parsePostType(value: unknown): "post" | "video" | undefined {
+    if (value === undefined || value === "") return undefined;
+    if (value === "post" || value === "video") return value;
+    throw new BadRequestException("Invalid post type.");
 }
 
 export function validateMedia(files: UploadedMedia[]): void {

@@ -4,10 +4,10 @@ import { AuthGuard } from "../auth/auth.guard.js";
 import type { AuthenticatedRequest } from "../auth/auth.types.js";
 import { PostsService } from "./posts.service.js";
 import { POST_LIMITS, type UploadedMedia, type GetPostsDto } from "./posts.types.js";
-import { parseId, parseMutation, parseComment, parseRepost, parsePostSort, parsePostPeriod, parsePostMediaOnly, parseApproveAction, parseFeedRandomizationCursor, parseFeedRandomizationSession, parsePostRandomize } from "./posts.validation.js";
+import { parseId, parseMutation, parseComment, parseRepost, parsePostSort, parsePostPeriod, parsePostMediaOnly, parsePostType, parseApproveAction, parseFeedRandomizationCursor, parseFeedRandomizationSession, parsePostRandomize } from "./posts.validation.js";
 
 const mediaInterceptor = FilesInterceptor("media", POST_LIMITS.files, {
-    limits: { files: POST_LIMITS.files, fileSize: POST_LIMITS.fileBytes, fields: 4, fieldSize: 24 * 1024, parts: 9 },
+    limits: { files: POST_LIMITS.files, fileSize: POST_LIMITS.fileBytes, fields: 5, fieldSize: 24 * 1024, parts: 10 },
 });
 
 @Controller("api/posts")
@@ -25,6 +25,7 @@ export class PostsController {
         @Query("mediaOnly") mediaOnly: unknown,
         @Query("randomize") randomizeValue: unknown,
         @Query("feedSession") feedSessionValue: unknown,
+        @Query("postType") postTypeValue: unknown,
     ) {
         if (search !== undefined && (typeof search !== "string" || search.length > 200)) throw new BadRequestException("Tìm kiếm tối đa 200 ký tự.");
         const searchQuery = typeof search === "string" ? search.trim() : "";
@@ -45,6 +46,7 @@ export class PostsController {
             sort: parsePostSort(sort, Boolean(searchQuery)),
             period: parsePostPeriod(period),
             mediaOnly: parsePostMediaOnly(mediaOnly),
+            postType: parsePostType(postTypeValue),
         };
         return this.posts.list(request.userId!, dto);
     }

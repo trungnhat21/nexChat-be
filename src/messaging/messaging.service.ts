@@ -1,8 +1,9 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { PostStorageService } from "../posts/post-storage.service.js";
 import { NotificationsGateway } from "../notifications/notifications.gateway.js";
+import type { StoredMedia, UploadedMedia } from "../posts/posts.types.js";
 
 const personSelect = {
     id: true,
@@ -53,6 +54,7 @@ export class MessagingService {
     }
 
     private async message(row: MessageRow, viewerId: bigint) {
+        const media = await this.prisma.attachments.findMany({ where: { owner_type: "message", owner_id: row.id }, orderBy: { id: "asc" } });
         return {
             id: row.id.toString(),
             conversationId: row.conversation_id.toString(),
@@ -64,6 +66,13 @@ export class MessagingService {
             isRead: row.message_reads.some(read => read.user_id === viewerId),
             status: row.sender_id !== viewerId ? null : row.message_reads.some(read => read.user_id !== viewerId) ? "read" : row.delivered_at ? "delivered" : "sent",
             sender: row.users ? await this.person(row.users) : null,
+            attachments: await Promise.all(media.map(async item => ({
+                url: await this.storage.url(item.file_url, item.file_type),
+                mimeType: item.file_type,
+                name: item.file_name,
+                size: item.file_size === null ? null : Number(item.file_size),
+                durationMs: item.duration_ms,
+            }))),
         };
     }
 
@@ -254,31 +263,55 @@ export class MessagingService {
         return { success: true, readIds: messages.map(message => message.id.toString()) };
     }
 
-    async sendMessage(userId: bigint, conversationId: bigint, content: string, clientMessageId: string) {
+    async sendMessage(userId: bigint, conversationId: bigint, content: string, clientMessageId: string, files: UploadedMedia[] = [], messageType: "text" | "image" | "audio" = "text", durationMs: number | null = null) {
+        if (content.length > 4000 || (!content.trim() && files.length === 0)) throw new BadRequestException("Tin nhắn cần có nội dung hoặc tệp đính kèm.");
         const key = { conversation_id: conversationId, sender_id: userId, client_message_id: clientMessageId };
         let row: MessageRow;
+        const existing = await this.prisma.$transaction(async tx => {
+            await this.requireMember(tx, conversationId, userId);
+            return tx.messages.findUnique({ where: { conversation_id_sender_id_client_message_id: key }, include: messageInclude });
+        }, { maxWait: 15000, timeout: 15000 });
+        if (existing) {
+            if (existing.content !== content || existing.message_type !== messageType) throw new ConflictException("Mã gửi lại đã được dùng cho nội dung khác.");
+            return { success: true, message: await this.message(existing, userId) };
+        }
+        const uploaded: StoredMedia[] = [];
+        let reusedAfterRace = false;
+        try {
+            for (const file of files) uploaded.push(await this.storage.upload(userId, file, "messages"));
+        } catch (error) {
+            await this.storage.remove(uploaded.map(item => item.key));
+            throw error;
+        }
         try {
             row = await this.prisma.$transaction(async tx => {
                 await this.requireMember(tx, conversationId, userId);
-                const existing = await tx.messages.findUnique({ where: { conversation_id_sender_id_client_message_id: key }, include: messageInclude });
-                if (existing) {
-                    if (existing.content !== content) throw new ConflictException("Mã gửi lại đã được dùng cho nội dung khác.");
-                    return existing;
+                const raced = await tx.messages.findUnique({ where: { conversation_id_sender_id_client_message_id: key }, include: messageInclude });
+                if (raced) {
+                    if (raced.content !== content || raced.message_type !== messageType) throw new ConflictException("Mã gửi lại đã được dùng cho nội dung khác.");
+                    reusedAfterRace = true;
+                    return raced;
                 }
                 const created = await tx.messages.create({
-                    data: { conversation_id: conversationId, sender_id: userId, content, message_type: "text", client_message_id: clientMessageId },
+                    data: { conversation_id: conversationId, sender_id: userId, content: content.trim() || null, message_type: messageType, client_message_id: clientMessageId },
                     include: messageInclude,
                 });
+                if (uploaded.length) await tx.attachments.createMany({ data: uploaded.map(item => ({ owner_type: "message" as const, owner_id: created.id, file_url: item.key, file_type: item.type, file_name: item.name, file_size: BigInt(item.size), duration_ms: messageType === "audio" ? durationMs : null })) });
                 await tx.conversations.update({ where: { id: conversationId }, data: { updated_at: new Date() } });
                 return created;
             }, { maxWait: 15000, timeout: 15000 });
         } catch (error) {
-            if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") throw error;
+            if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
+                await this.storage.remove(uploaded.map(item => item.key));
+                throw error;
+            }
             const existing = await this.prisma.messages.findUnique({ where: { conversation_id_sender_id_client_message_id: key }, include: messageInclude });
-            if (!existing) throw error;
-            if (existing.content !== content) throw new ConflictException("Mã gửi lại đã được dùng cho nội dung khác.");
+            if (!existing) { await this.storage.remove(uploaded.map(item => item.key)); throw error; }
+            await this.storage.remove(uploaded.map(item => item.key));
+            if (existing.content !== content || existing.message_type !== messageType) throw new ConflictException("Mã gửi lại đã được dùng cho nội dung khác.");
             row = existing;
         }
+        if (reusedAfterRace) await this.storage.remove(uploaded.map(item => item.key));
 
         const message = await this.message(row, userId);
         const members = await this.prisma.conversation_members.findMany({

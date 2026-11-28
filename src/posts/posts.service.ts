@@ -98,6 +98,7 @@ export class PostsService {
             { privacy: "public" }, { user_id: userId }, { privacy: "friends", user_id: { in: friendIds } },
         ] };
         const where: Prisma.postsWhereInput = { deleted_at: null, approval_status: "PUBLISHED", AND: [visible] };
+        if (dto.postType) where.post_type = dto.postType;
         if (savedOnly) where.saved_posts = { some: { user_id: userId } };
         if (authorId !== undefined) where.user_id = authorId;
         if (search) where.AND = [visible, { OR: [
@@ -310,7 +311,7 @@ export class PostsService {
         const savedIds = new Set(saves.map(save => save.post_id));
         const likedIds = new Set(ownLikes.map(like => like.target_id));
         return Promise.all(rows.map(async row => ({
-            id: row.id.toString(), content: row.content ?? "", privacy: row.privacy,
+            id: row.id.toString(), content: row.content ?? "", postType: row.post_type, privacy: row.privacy,
             createdAt: row.created_at.toISOString(), updatedAt: row.updated_at.toISOString(),
             canEdit: row.user_id === userId,
             author: { id: row.users.id.toString(), name: row.users.profiles?.display_name || [row.users.last_name, row.users.first_name].filter(Boolean).join(" ") || row.users.user_name || "Người dùng", handle: row.users.user_name, avatar: await this.profileImage(row.users.profiles?.avatar_url || row.users.avatar) },
@@ -465,6 +466,8 @@ export class PostsService {
     }
     async create(userId: bigint, input: PostMutation, files: UploadedMedia[]) {
         validateMedia(files);
+        const postType = input.postType ?? "post";
+        if (postType === "video" && !files.some(file => file.mimetype.startsWith("video/"))) throw new BadRequestException("A video post requires at least one video attachment.");
         if (input.keepMediaIds.length) throw new BadRequestException("Bài mới không được dùng media của bài khác.");
         if (!input.content && !files.length) throw new BadRequestException("Hãy nhập nội dung hoặc đính kèm media.");
 
@@ -498,6 +501,7 @@ export class PostsService {
                     data: {
                         user_id: userId,
                         content: input.content,
+                        post_type: postType,
                         privacy: input.privacy,
                         group_id: input.groupId ?? null,
                         approval_status: approvalStatus,
@@ -539,6 +543,7 @@ export class PostsService {
     async update(userId: bigint, id: bigint, input: PostMutation, files: UploadedMedia[]) {
         await this.owned(userId, id);
         const existingPost = await this.prisma.posts.findUniqueOrThrow({ where: { id } });
+        const postType = input.postType ?? existingPost.post_type;
         validateMedia(files);
         if (input.keepMediaIds.length + files.length > POST_LIMITS.files) throw new BadRequestException("Tối đa 5 media mỗi bài.");
         if (!existingPost.is_repost && !input.content && !files.length && !input.keepMediaIds.length) throw new BadRequestException("Bài viết không được để trống.");
@@ -546,10 +551,11 @@ export class PostsService {
         let result: { row: PostRow; removed: string[] };
         try {
             result = await this.prisma.$transaction(async tx => {
-                const changed = await tx.posts.updateMany({ where: { id, user_id: userId, deleted_at: null }, data: { content: input.content, privacy: input.privacy, updated_at: new Date() } });
+                const changed = await tx.posts.updateMany({ where: { id, user_id: userId, deleted_at: null }, data: { content: input.content, privacy: input.privacy, post_type: postType, updated_at: new Date() } });
                 if (!changed.count) throw new NotFoundException("Bài viết không còn tồn tại.");
                 const current = await tx.attachments.findMany({ where: { owner_type: "post", owner_id: id } });
                 const kept = current.filter(file => input.keepMediaIds.includes(file.id));
+                if (postType === "video" && !kept.some(file => file.file_type?.startsWith("video/")) && !files.some(file => file.mimetype.startsWith("video/"))) throw new BadRequestException("A video post requires at least one video attachment.");
                 if (kept.length !== input.keepMediaIds.length) throw new BadRequestException("Media không thuộc bài viết này hoặc đã bị xóa.");
                 if (kept.reduce((sum,file) => sum + Number(file.file_size ?? 0), 0) + files.reduce((sum,file) => sum + file.size,0) > POST_LIMITS.totalBytes) throw new BadRequestException("Tổng media tối đa 50 MB.");
                 const removed = current.filter(file => !input.keepMediaIds.includes(file.id));
