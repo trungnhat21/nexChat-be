@@ -10,7 +10,7 @@ import { createAccessToken } from "../dist/utils/token.js";
 import { PostsController } from "../dist/posts/posts.controller.js";
 import { PostsService } from "../dist/posts/posts.service.js";
 import { PostStorageService } from "../dist/posts/post-storage.service.js";
-import { buildFeedRandomizationPlan, encodeFeedRandomizationCursor, encodeFeedRandomizationSession, parseFeedRandomizationCursor, parseFeedRandomizationSession, parseId, parseMutation, parsePostRandomize, validateMedia } from "../dist/posts/posts.validation.js";
+import { buildFeedRandomizationPlan, encodeFeedRandomizationCursor, encodeFeedRandomizationSession, parseFeedRandomizationCursor, parseFeedRandomizationSession, parseId, parseMutation, parsePostRandomize, parsePostType, validateMedia } from "../dist/posts/posts.validation.js";
 import { PrismaService } from "../dist/prisma/prisma.service.js";
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=", "base64");
@@ -18,9 +18,14 @@ const file = { originalname: "pixel.png", mimetype: "image/png", size: png.lengt
 const input = content => parseMutation({ content, privacy: "public", keepMediaIds: "[]" });
 
 test("rejects invalid IDs, injected media IDs and malformed mutation bodies", () => {
-    for (const value of ["0", "-1", "1.1", "18446744073709551616", "1 OR 1=1", 1, null]) assert.throws(() => parseId(value), BadRequestException);
+    for (const value of ["0", "-1", "1.1", "18446744073709551616", "1 OR 1=1", null]) assert.throws(() => parseId(value), BadRequestException);
+    assert.equal(parseId(1), 1n, "safe integer IDs are accepted by the existing parser");
     for (const body of [{content:"x",privacy:"unknown"},{content:"x",keepMediaIds:'["1","1"]'},{content:"x",keepMediaIds:"{}"},{content:"x",keepMediaIds:'["-1"]'},{content:"x".repeat(5001)}, { content: {} }]) assert.throws(() => parseMutation(body), BadRequestException);
     assert.deepEqual(parseMutation({content:"  hello  ",privacy:"private",keepMediaIds:'["12"]'}),{content:"hello",privacy:"private",keepMediaIds:[12n]});
+    assert.equal(parseMutation({content:"clip",postType:"video",keepMediaIds:"[]"}).postType,"video");
+    assert.throws(() => parseMutation({content:"x",postType:"livestream"}),BadRequestException);
+    assert.equal(parsePostType("video"),"video");
+    assert.throws(() => parsePostType("other"),BadRequestException);
 });
 test("validates binary signatures, empty files and per-file/combined upload limits", () => {
     validateMedia([file]);
@@ -30,6 +35,12 @@ test("validates binary signatures, empty files and per-file/combined upload limi
     assert.throws(() => validateMedia(Array(6).fill(file)), BadRequestException);
     assert.throws(() => validateMedia([{...file,size:26*1024*1024}]), BadRequestException);
     assert.throws(() => validateMedia(Array(3).fill({...file,size:20*1024*1024})), BadRequestException);
+});
+
+test("a video-kind post must include a video attachment", async () => {
+    const storage = { upload: async () => { throw new Error("should not upload"); }, remove: async () => {} };
+    const service = new PostsService({}, storage);
+    await assert.rejects(service.create(1n, parseMutation({content:"clip",postType:"video",keepMediaIds:"[]"}), [file]), BadRequestException);
 });
 
 test("validates deterministic randomized-feed sessions and cursors", () => {
@@ -75,14 +86,17 @@ test("HTTP guard, multipart parsing and body validation work together", async ()
     try {
         assert.equal((await fetch(base+"/api/posts")).status,401);
         assert.equal((await fetch(base+"/api/posts",{headers:{Authorization:"Bearer "+createAccessToken(1n,"expired-session")}})).status,401);
-        const form=new FormData();form.set("content"," Hello ");form.set("privacy","public");form.set("keepMediaIds","[]");form.append("media",new Blob([png],{type:"image/png"}),"pixel.png");
+        const form=new FormData();form.set("content"," Hello ");form.set("privacy","public");form.set("keepMediaIds","[]");form.set("postType","post");form.append("media",new Blob([png],{type:"image/png"}),"pixel.png");
         const result=await fetch(base+"/api/posts",{method:"POST",headers:{Authorization:"Bearer "+token},body:form});
-        assert.equal(result.status,201);assert.equal(calls[0].userId,1n);assert.equal(calls[0].body.content,"Hello");assert.equal(calls[0].files[0].buffer.length,png.length);
+        assert.equal(result.status,201);assert.equal(calls[0].userId,1n);assert.equal(calls[0].body.content,"Hello");assert.equal(calls[0].body.postType,"post");assert.equal(calls[0].files[0].buffer.length,png.length);
         assert.equal((await fetch(base+"/api/posts/not-an-id",{method:"DELETE",headers:{Authorization:"Bearer "+token}})).status,400);
         assert.equal((await fetch(base+"/api/posts?authorId=invalid",{headers:{Authorization:"Bearer "+token}})).status,400);
         assert.equal((await fetch(base+"/api/posts?randomize=true&search=hello",{headers:{Authorization:"Bearer "+token}})).status,400,"relevance searches keep their existing ordering");
         const randomized=await fetch(base+"/api/posts?randomize=true",{headers:{Authorization:"Bearer "+token}});
         assert.equal(randomized.status,200);assert.equal(listCalls.at(-1).userId,1n);assert.equal(listCalls.at(-1).dto.randomize,true);
+        assert.equal((await fetch(base+"/api/posts?postType=video",{headers:{Authorization:"Bearer "+token}})).status,200);
+        assert.equal(listCalls.at(-1).dto.postType,"video");
+        assert.equal((await fetch(base+"/api/posts?postType=invalid",{headers:{Authorization:"Bearer "+token}})).status,400);
         const seed="0123456789abcdef0123456789abcdef";
         const feedSession=encodeFeedRandomizationSession({version:1,seed,snapshotId:"99"});
         const feedCursor=encodeFeedRandomizationCursor({version:1,seed,segment:2,lastId:"42"});

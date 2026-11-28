@@ -7,14 +7,15 @@ datasource db {
 }
 
 model attachments {
-  id         BigInt                 @id @default(autoincrement()) @db.UnsignedBigInt
-  owner_type attachments_owner_type
-  owner_id   BigInt                 @db.UnsignedBigInt
-  file_url   String                 @db.VarChar(1000)
-  file_type  String?                @db.VarChar(100)
-  file_name  String?                @db.VarChar(255)
-  file_size  BigInt?                @db.UnsignedBigInt
-  created_at DateTime               @default(now()) @db.DateTime(0)
+  id          BigInt                 @id @default(autoincrement()) @db.UnsignedBigInt
+  owner_type  attachments_owner_type
+  owner_id    BigInt                 @db.UnsignedBigInt
+  file_url    String                 @db.VarChar(1000)
+  file_type   String?                @db.VarChar(100)
+  file_name   String?                @db.VarChar(255)
+  file_size   BigInt?                @db.UnsignedBigInt
+  created_at  DateTime               @default(now()) @db.DateTime(0)
+  duration_ms Int?
 
   @@index([owner_type, owner_id], map: "idx_attachments_owner")
 }
@@ -328,6 +329,7 @@ model posts {
   is_repost       Boolean              @default(false)
   approval_status post_approval_status @default(PUBLISHED)
   group_id        BigInt?              @db.UnsignedBigInt
+  post_type       posts_post_type      @default(post)
   comments        comments[]
   groups          groups?              @relation("GroupPosts", fields: [group_id], references: [id], map: "fk_posts_group")
   original        posts?               @relation("PostReposts", fields: [shared_post_id], references: [id], onUpdate: NoAction, map: "fk_posts_original")
@@ -338,6 +340,7 @@ model posts {
   @@index([shared_post_id], map: "idx_posts_original")
   @@index([created_at], map: "idx_posts_created_at")
   @@index([user_id], map: "idx_posts_user")
+  @@index([post_type, created_at, id], map: "idx_posts_type_created_at")
   @@index([group_id, approval_status, created_at], map: "idx_posts_group_approval")
 }
 
@@ -545,6 +548,11 @@ enum posts_privacy {
   private
 }
 
+enum posts_post_type {
+  post
+  video
+}
+
 enum story_visibility {
   public
   friends
@@ -592,6 +600,7 @@ enum reactions_reaction_type {
 enum messages_message_type {
   text
   image
+  audio
   file
   system
 }

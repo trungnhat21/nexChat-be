@@ -4,7 +4,7 @@ import { BadRequestException, ForbiddenException, NotFoundException } from "@nes
 import { MessagingService } from "../dist/messaging/messaging.service.js";
 import { NotificationsGateway } from "../dist/notifications/notifications.gateway.js";
 import { createAccessToken } from "../dist/utils/token.js";
-import { parseClientMessageId, parseDirectRecipient, parseMessageContent, parseMessageCursor, parseMessageLimit, parseMessagingId, parseSendMessage, parseVisibleMessageIds } from "../dist/messaging/messaging.validation.js";
+import { parseClientMessageId, parseDirectRecipient, parseMessageContent, parseMessageCursor, parseMessageLimit, parseMessagingId, parseSendMessage, parseVisibleMessageIds, validateMessageMedia } from "../dist/messaging/messaging.validation.js";
 
 const uuid = "d4d8c9f1-3d4d-4a17-8f62-5784fc9520d1";
 
@@ -23,6 +23,18 @@ test("validates recipient IDs, cursors, limits, message bodies, and idempotency 
     for (const value of ["", "  ", "x".repeat(4001), null]) assert.throws(() => parseMessageContent(value), BadRequestException);
     for (const value of ["nope", "00000000-0000-0000-0000-000000000000", null]) assert.throws(() => parseClientMessageId(value), BadRequestException);
     for (const value of ["0", "51", "1;drop", 2]) assert.throws(() => parseMessageLimit(value), BadRequestException);
+});
+
+test("validates image/audio attachment types, signatures, sizes, and voice duration", () => {
+    const png = { mimetype: "image/png", size: 8, buffer: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]) };
+    const webm = { mimetype: "audio/webm", size: 4, buffer: Buffer.from([0x1a, 0x45, 0xdf, 0xa3]) };
+    const wav = { mimetype: "audio/wav", size: 12, buffer: Buffer.from("RIFF0000WAVE") };
+    assert.equal(validateMessageMedia([png], "image", undefined).messageType, "image");
+    assert.deepEqual(validateMessageMedia([webm], "audio", "1450"), { messageType: "audio", durationMs: 1450 });
+    assert.equal(validateMessageMedia([wav], "audio", "4000").messageType, "audio");
+    assert.throws(() => validateMessageMedia([{ ...png, mimetype: "image/jpeg" }], "image"), BadRequestException);
+    assert.throws(() => validateMessageMedia([webm], "audio", "-1"), BadRequestException);
+    assert.throws(() => validateMessageMedia([webm], "audio", undefined), BadRequestException);
 });
 
 test("creates one canonical direct conversation and reuses it on later requests", async () => {
@@ -83,7 +95,7 @@ test("loads a descending cursor page as chronological messages and returns the n
         messages: { findMany: async () => messageQueries++ === 0 ? rows : [] },
         message_reads: { createMany: async () => ({ count: 0 }) },
     };
-    const service = new MessagingService({ $transaction: callback => callback(tx) }, {}, {});
+    const service = new MessagingService({ $transaction: callback => callback(tx), attachments: { findMany: async () => [] } }, {}, {});
     const page = await service.listMessages(1n, 12n, undefined, 2);
     assert.deepEqual(page.messages.map(message => message.id), ["2", "3"]);
     assert.equal(page.hasMore, true);
@@ -104,14 +116,14 @@ test("message retries with the same key return the saved message without inserti
             findUnique: async () => stored.get(uuid) ?? null,
             create: async ({ data }) => {
                 creates++;
-                const row = { id: 55n, conversation_id: 12n, sender_id: 1n, client_message_id: data.client_message_id, content: data.content, created_at: new Date("2026-10-23T10:00:00.000Z"), delivered_at: null, message_reads: [], users: sender };
+                const row = { id: 55n, conversation_id: 12n, sender_id: 1n, client_message_id: data.client_message_id, content: data.content, message_type: data.message_type, created_at: new Date("2026-10-23T10:00:00.000Z"), delivered_at: null, message_reads: [], users: sender };
                 stored.set(uuid, row);
                 return row;
             },
         },
     };
     const delivered = [];
-    const prisma = { $transaction: callback => callback(tx), conversation_members: { findMany: async () => [{ user_id: 1n }, { user_id: 2n }] } };
+    const prisma = { $transaction: callback => callback(tx), attachments: { findMany: async () => [] }, conversation_members: { findMany: async () => [{ user_id: 1n }, { user_id: 2n }] } };
     const service = new MessagingService(prisma, { url: async value => value }, { notifyMessage: (userId, payload) => delivered.push({ userId, payload }) });
     const first = await service.sendMessage(1n, 12n, "Hello", uuid);
     const retry = await service.sendMessage(1n, 12n, "Hello", uuid);
@@ -119,7 +131,7 @@ test("message retries with the same key return the saved message without inserti
     assert.equal(first.message.status, "sent");
     assert.equal(retry.message.id, "55");
     assert.equal(creates, 1);
-    assert.equal(delivered.length, 4);
+    assert.equal(delivered.length, 2, "a duplicate idempotent retry does not emit a second message event");
     assert.equal(delivered[0].payload.message.sender.name, "Sender Test");
 });
 
